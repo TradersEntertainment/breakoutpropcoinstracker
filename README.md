@@ -11,6 +11,30 @@ HL'de funding saat başı ödendiği için genelde çok daha küçüktür; fark 
 - Binance funding **negatif** (ör. -1%): funding'i LONG taraf toplar → Binance LONG + HL SHORT
 - Binance funding **pozitif** (ör. +1%): funding'i SHORT taraf toplar → Binance SHORT + HL LONG
 
+## Bildirim örneği
+
+Başlık//footer yok — her coin bloğu doğrudan kararı verecek bilgiyi taşır:
+
+```
+🔴 KAITO · KAITOUSDT · $0.6612 · 24s -4.18%
+
+💰 Binance: -0.7069% / 8sa  →  saatlik -0.0884%
+🌊 Hyperliquid: -0.0125% / 1sa  →  8 saatte -0.1000%
+⚖️ Fark: +0.6069% / 8sa  ·  yıllık ~%665
+
+⏳ Binance ödemesi: 46 dk sonra (20:18)
+🕐 HL ödemesi: 28 dk sonra (20:00)
+
+📍 Binance LONG + HL SHORT
+   Binance long 0.7069% alır · HL short 0.1000% öder
+   10.000$ bacak başına ≈ +60,69$ / 8sa
+```
+
+**Fark** satırı iki bacaklı kurgunun net getirisidir: Binance bacağının aldığı
+funding eksi HL bacağının ödediği funding. Yön otomatik seçilir — iki
+kombinasyondan hangisi pozitif net veriyorsa o yazılır (HL funding'i Binance'i
+aşarsa yön kendiliğinden ters döner). Saatler TR saatidir (`TZ_OFFSET_HOURS`).
+
 ## Nasıl çalışır
 
 1. Açılışta `assets.json` içindeki prop listesini Binance'in güncel perpetual
@@ -51,6 +75,8 @@ HL'de funding saat başı ödendiği için genelde çok daha küçüktür; fark 
 | `REALERT_DELTA` | `0.3` | Funding bu kadar puan artarsa cooldown'u bekleme. |
 | `HEARTBEAT_HOURS` | `24` | "Çalışıyorum" özeti sıklığı (0 = kapat). |
 | `MAPPING_REFRESH_HOURS` | `6` | Binance listesi yenileme sıklığı. |
+| `POSITION_SIZE_USD` | `10000` | Kazanç örneğinin hesaplandığı bacak büyüklüğü. |
+| `TZ_OFFSET_HOURS` | `3` | Mesajdaki saat gösterimi (TR = +3). |
 | `RUN_ONCE` | — | `1` yapılırsa tek tarama yapıp çıkar (sadece test için). |
 
 ## Coin listesini güncelleme

@@ -15,7 +15,7 @@ import json
 import os
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -47,12 +47,17 @@ COOLDOWN_MINUTES = _env_num("ALERT_COOLDOWN_MINUTES", 45)
 REALERT_DELTA = _env_num("REALERT_DELTA", 0.3)                # % puan; bu kadar artarsa cooldown beklemez
 HEARTBEAT_HOURS = _env_num("HEARTBEAT_HOURS", 24)             # 0 = kapalı
 MAPPING_REFRESH_HOURS = _env_num("MAPPING_REFRESH_HOURS", 6)
+POSITION_SIZE = _env_num("POSITION_SIZE_USD", 10000)          # $ — kazanç örneği için
+TZ_OFFSET_HOURS = _env_num("TZ_OFFSET_HOURS", 3)              # saat gösterimi (TR = +3)
 RUN_ONCE = os.environ.get("RUN_ONCE", "") == "1"
+
+LOCAL_TZ = timezone(timedelta(hours=TZ_OFFSET_HOURS))
 
 FAPI = "https://fapi.binance.com/fapi/v1"
 HYPERLIQUID_INFO = "https://api.hyperliquid.xyz/info"
 ASSETS_FILE = Path(__file__).with_name("assets.json")
 TELEGRAM_CHUNK = 3800  # Telegram tek mesaj limiti 4096
+SEPARATOR = "\n\n➖➖➖➖➖➖➖➖\n\n"
 
 session = requests.Session()
 session.headers.update({"User-Agent": "breakout-prop-funding-bot/1.0"})
@@ -174,6 +179,16 @@ def fetch_premium_index() -> dict[str, dict]:
     return {d["symbol"]: d for d in data if isinstance(d, dict) and d.get("symbol")}
 
 
+def fetch_ticker_24h() -> dict[str, dict]:
+    """Fiyat ve 24s değişim — mesaja bağlam eklemek için."""
+    try:
+        data = get_json(f"{FAPI}/ticker/24hr")
+        return {d["symbol"]: d for d in data if isinstance(d, dict) and d.get("symbol")}
+    except Exception as error:
+        log(f"24s ticker alınamadı: {error}")
+        return {}
+
+
 def fetch_hyperliquid_funding() -> dict[str, float]:
     """HL coin adı → saatlik funding (% cinsinden)."""
     try:
@@ -195,12 +210,14 @@ def fetch_hyperliquid_funding() -> dict[str, float]:
 
 
 def chunk_message(text: str) -> list[str]:
+    """Uzun mesajı böler; mümkünse coin bloklarını bölmeden."""
     if len(text) <= TELEGRAM_CHUNK:
         return [text]
+    separator = SEPARATOR if SEPARATOR in text else "\n\n"
     chunks: list[str] = []
     current = ""
-    for block in text.split("\n\n"):
-        candidate = f"{current}\n\n{block}" if current else block
+    for block in text.split(separator):
+        candidate = f"{current}{separator}{block}" if current else block
         if len(candidate) > TELEGRAM_CHUNK and current:
             chunks.append(current)
             current = block
@@ -241,6 +258,43 @@ def send_telegram(text: str) -> None:
 # ── Mesaj biçimleme ──────────────────────────────────────────────────
 
 
+def fmt_thousands(value: float, decimals: int = 0) -> str:
+    """Türkçe biçim: binlik ayracı nokta, ondalık virgül."""
+    text = f"{value:,.{decimals}f}"
+    return text.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+
+
+def fmt_price(price: float) -> str:
+    if price <= 0:
+        return "-"
+    if price >= 100:
+        return "$" + fmt_thousands(price, 2)
+    if price >= 1:
+        return "$" + fmt_thousands(price, 4)
+    return "$" + f"{price:.8f}".rstrip("0").rstrip(".")
+
+
+def fmt_clock(epoch_seconds: float) -> str:
+    return datetime.fromtimestamp(epoch_seconds, LOCAL_TZ).strftime("%H:%M")
+
+
+def minutes_until(epoch_seconds: float) -> int:
+    return max(0, int((epoch_seconds - time.time()) // 60))
+
+
+def fmt_duration(minutes: int) -> str:
+    if minutes < 60:
+        return f"{minutes} dk"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours}sa {rest}dk" if rest else f"{hours} saat"
+
+
+def next_hl_funding_epoch() -> float:
+    """Hyperliquid funding'i her saat başı ödenir."""
+    now = time.time()
+    return now - (now % 3600) + 3600
+
+
 def format_coin_block(
     hl_name: str,
     symbol: str,
@@ -248,25 +302,86 @@ def format_coin_block(
     next_funding_ms: float,
     interval_hours: float,
     hl_rate_pct_hour: float | None,
+    ticker: dict | None = None,
 ) -> str:
-    if rate_pct > 0:
-        side = "Funding'i SHORT taraf topluyor → arb: Binance SHORT + HL LONG"
-    else:
-        side = "Funding'i LONG taraf topluyor → arb: Binance LONG + HL SHORT"
+    """Tek coin için bildirim bloğu — başlıksız, doğrudan bilgi."""
+    icon = "🟢" if rate_pct > 0 else "🔴"
+    binance_hourly = rate_pct / interval_hours
+
+    head = f"{icon} <b>{hl_name}</b> · {symbol}"
+    if ticker:
+        price = safe_float(ticker.get("lastPrice"))
+        change = safe_float(ticker.get("priceChangePercent"))
+        if price > 0:
+            head += f" · {fmt_price(price)} · 24s {change:+.2f}%"
+
     lines = [
-        f"🔔 <b>{hl_name}</b> ({symbol})",
-        f"   💰 Binance funding: <b>{rate_pct:+.4f}%</b> / {interval_hours:g} saat",
+        head,
+        "",
+        f"💰 <b>Binance:</b> <b>{rate_pct:+.4f}%</b> / {interval_hours:g}sa"
+        f"  →  saatlik {binance_hourly:+.4f}%",
     ]
-    if next_funding_ms:
-        minutes = max(0, int(next_funding_ms / 1000 - time.time()) // 60)
-        lines.append(f"   ⏳ Sonraki Binance funding: {minutes} dk")
-    if hl_rate_pct_hour is not None:
-        equivalent = hl_rate_pct_hour * interval_hours
+
+    if hl_rate_pct_hour is None:
+        lines.append("🌊 <b>Hyperliquid:</b> veri alınamadı — net hesaplanamadı")
+        # HL bilinmiyorsa yön yalnızca Binance funding işaretinden çıkar
+        net = None
+        legs = "Binance SHORT + HL LONG" if rate_pct > 0 else "Binance LONG + HL SHORT"
+        leg_detail = None
+    else:
+        hl_per_interval = hl_rate_pct_hour * interval_hours
         lines.append(
-            f"   🌊 Hyperliquid funding: {hl_rate_pct_hour:+.4f}%/saat"
-            f" (~{equivalent:+.4f}%/{interval_hours:g}s)"
+            f"🌊 <b>Hyperliquid:</b> <b>{hl_rate_pct_hour:+.4f}%</b> / 1sa"
+            f"  →  {interval_hours:g} saatte {hl_per_interval:+.4f}%"
         )
-    lines.append(f"   📍 {side}")
+        # İki bacaklı kurgunun net getirisi; hangisi pozitifse o taraf doğru
+        net_long_binance = -rate_pct + hl_per_interval   # Binance LONG + HL SHORT
+        net_short_binance = rate_pct - hl_per_interval   # Binance SHORT + HL LONG
+        if net_long_binance >= net_short_binance:
+            net = net_long_binance
+            legs = "Binance LONG + HL SHORT"
+            binance_side, hl_side = "long", "short"
+            binance_leg, hl_leg = -rate_pct, hl_per_interval
+        else:
+            net = net_short_binance
+            legs = "Binance SHORT + HL LONG"
+            binance_side, hl_side = "short", "long"
+            binance_leg, hl_leg = rate_pct, -hl_per_interval
+        b_verb = "alır" if binance_leg >= 0 else "öder"
+        h_verb = "alır" if hl_leg >= 0 else "öder"
+        leg_detail = (
+            f"   Binance {binance_side} {abs(binance_leg):.4f}% {b_verb} · "
+            f"HL {hl_side} {abs(hl_leg):.4f}% {h_verb}"
+        )
+        annual = net * (24 / interval_hours) * 365
+        lines.append(
+            f"⚖️ <b>Fark:</b> <b>{net:+.4f}%</b> / {interval_hours:g}sa"
+            f"  ·  yıllık ~%{fmt_thousands(annual)}"
+        )
+
+    lines.append("")
+    if next_funding_ms:
+        due = next_funding_ms / 1000
+        lines.append(
+            f"⏳ <b>Binance ödemesi: {fmt_duration(minutes_until(due))}</b> sonra"
+            f" ({fmt_clock(due)})"
+        )
+    hl_due = next_hl_funding_epoch()
+    lines.append(
+        f"🕐 HL ödemesi: {fmt_duration(minutes_until(hl_due))} sonra ({fmt_clock(hl_due)})"
+    )
+
+    lines.append("")
+    lines.append(f"📍 <b>{legs}</b>")
+    if leg_detail:
+        lines.append(leg_detail)
+    if net is not None and POSITION_SIZE > 0:
+        profit = net / 100 * POSITION_SIZE
+        lines.append(
+            f"   {fmt_thousands(POSITION_SIZE)}$ bacak başına ≈"
+            f" <b>{'+' if profit >= 0 else '-'}{fmt_thousands(abs(profit), 2)}$</b>"
+            f" / {interval_hours:g}sa"
+        )
     return "\n".join(lines)
 
 
@@ -347,6 +462,9 @@ def scan(
     blocks: list[str] = []
     if triggered:
         hl_funding = fetch_hyperliquid_funding()
+        tickers = fetch_ticker_24h()
+        # En yüksek |funding| en üstte
+        triggered.sort(key=lambda item: abs(item[2]), reverse=True)
         for hl_name, symbol, rate_pct in triggered:
             blocks.append(
                 format_coin_block(
@@ -356,6 +474,7 @@ def scan(
                     safe_float(premium[symbol].get("nextFundingTime")),
                     intervals.get(symbol, 8.0),
                     hl_funding.get(hl_name),
+                    tickers.get(symbol),
                 )
             )
             last_alerts[symbol] = (now, abs(rate_pct))
@@ -406,12 +525,8 @@ def main() -> None:
 
             blocks, premium = scan(mapping, intervals, last_alerts)
             if blocks:
-                header = f"🚨 <b>FUNDING FIRSATI</b> (eşik ±{FUNDING_THRESHOLD:g}%)\n\n"
-                footer = (
-                    "\n\nℹ️ HL funding saat başı ödenir; Binance periyodu "
-                    "coine göre 4s/8s olabilir."
-                )
-                send_telegram(header + "\n\n".join(blocks) + footer)
+                # Başlık yok — her blok kendi başına okunur
+                send_telegram(SEPARATOR.join(blocks))
                 log(f"{len(blocks)} coin için bildirim gönderildi.")
 
             if next_heartbeat and cycle_start >= next_heartbeat:
