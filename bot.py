@@ -304,36 +304,21 @@ def format_coin_block(
     hl_rate_pct_hour: float | None,
     ticker: dict | None = None,
 ) -> str:
-    """Tek coin için bildirim bloğu — başlıksız, doğrudan bilgi."""
+    """Tek coin için bildirim bloğu.
+
+    İlk satır bildirim önizlemesinde görünen tek satırdır; funding'ler ve
+    net fark oraya konur. Ayrıntılar altta.
+    """
     icon = "🟢" if rate_pct > 0 else "🔴"
     binance_hourly = rate_pct / interval_hours
 
-    head = f"{icon} <b>{hl_name}</b> · {symbol}"
-    if ticker:
-        price = safe_float(ticker.get("lastPrice"))
-        change = safe_float(ticker.get("priceChangePercent"))
-        if price > 0:
-            head += f" · {fmt_price(price)} · 24s {change:+.2f}%"
-
-    lines = [
-        head,
-        "",
-        f"💰 <b>Binance:</b> <b>{rate_pct:+.4f}%</b> / {interval_hours:g}sa"
-        f"  →  saatlik {binance_hourly:+.4f}%",
-    ]
-
+    # ── Yön ve net getiri ──
     if hl_rate_pct_hour is None:
-        lines.append("🌊 <b>Hyperliquid:</b> veri alınamadı — net hesaplanamadı")
-        # HL bilinmiyorsa yön yalnızca Binance funding işaretinden çıkar
         net = None
         legs = "Binance SHORT + HL LONG" if rate_pct > 0 else "Binance LONG + HL SHORT"
         leg_detail = None
     else:
         hl_per_interval = hl_rate_pct_hour * interval_hours
-        lines.append(
-            f"🌊 <b>Hyperliquid:</b> <b>{hl_rate_pct_hour:+.4f}%</b> / 1sa"
-            f"  →  {interval_hours:g} saatte {hl_per_interval:+.4f}%"
-        )
         # İki bacaklı kurgunun net getirisi; hangisi pozitifse o taraf doğru
         net_long_binance = -rate_pct + hl_per_interval   # Binance LONG + HL SHORT
         net_short_binance = rate_pct - hl_per_interval   # Binance SHORT + HL LONG
@@ -353,9 +338,40 @@ def format_coin_block(
             f"   Binance {binance_side} {abs(binance_leg):.4f}% {b_verb} · "
             f"HL {hl_side} {abs(hl_leg):.4f}% {h_verb}"
         )
+
+    # ── 1. satır: bildirim önizlemesi ──
+    head = f"{icon} <b>{hl_name}</b> · Binance <b>{rate_pct:+.4f}%</b>"
+    if hl_rate_pct_hour is None:
+        head += " · HL veri yok"
+    else:
+        head += f" · HL {hl_rate_pct_hour:+.4f}% · Fark <b>{net:+.4f}%</b>"
+    lines = [head]
+
+    # ── 2. satır: bağlam ──
+    context = symbol
+    if ticker:
+        price = safe_float(ticker.get("lastPrice"))
+        change = safe_float(ticker.get("priceChangePercent"))
+        if price > 0:
+            context += f" · {fmt_price(price)} · 24s {change:+.2f}%"
+    lines.append(context)
+
+    # ── Ayrıntı ──
+    lines.append("")
+    lines.append(
+        f"💰 <b>Binance:</b> {rate_pct:+.4f}% / {interval_hours:g}sa"
+        f"  →  saatlik {binance_hourly:+.4f}%"
+    )
+    if hl_rate_pct_hour is None:
+        lines.append("🌊 <b>Hyperliquid:</b> veri alınamadı — net hesaplanamadı")
+    else:
+        lines.append(
+            f"🌊 <b>Hyperliquid:</b> {hl_rate_pct_hour:+.4f}% / 1sa"
+            f"  →  {interval_hours:g} saatte {hl_per_interval:+.4f}%"
+        )
         annual = net * (24 / interval_hours) * 365
         lines.append(
-            f"⚖️ <b>Fark:</b> <b>{net:+.4f}%</b> / {interval_hours:g}sa"
+            f"⚖️ <b>Fark:</b> {net:+.4f}% / {interval_hours:g}sa"
             f"  ·  yıllık ~%{fmt_thousands(annual)}"
         )
 
