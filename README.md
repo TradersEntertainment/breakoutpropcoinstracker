@@ -61,7 +61,13 @@ Saatler TR saatidir (`TZ_OFFSET_HOURS`).
 3. Eşiği geçen coinler için tek bir toplu bildirim atar. Aynı coin için spam
    olmaması adına **45 dk cooldown** vardır; funding bu sürede 0.3 puan daha
    yükselirse cooldown beklenmeden tekrar bildirir.
-4. Eşleşme listesi 6 saatte bir yenilenir (Binance'e yeni listelenen coinler
+4. **Hatırlatma:** Binance funding saatine **30 dk ve 15 dk kala**, coin hâlâ
+   eşiğin üstündeyse cooldown'a bakmadan tekrar bildirir — pozisyonu tam
+   zamanında açabilmen için. Hatırlatma mesajları ⏰ ile başlar (ilk bildirim ⏳).
+   Her işaret, her funding döngüsünde bir kez atar; funding eşiğin altına
+   düşerse hatırlatma gelmez. Dakikalar `REMINDER_MINUTES` ile değişir
+   (ör. `45,20,5`; boş bırakırsan hatırlatma kapanır).
+5. Eşleşme listesi 6 saatte bir yenilenir (Binance'e yeni listelenen coinler
    otomatik dahil olur), günde bir "bot çalışıyor" özeti atar.
 
 ## Kurulum
@@ -89,6 +95,7 @@ Saatler TR saatidir (`TZ_OFFSET_HOURS`).
 | `FUNDING_THRESHOLD` | `0.7` | Mutlak eşik (%). |
 | `CHECK_INTERVAL_SECONDS` | `60` | Kontrol sıklığı. |
 | `ALERT_COOLDOWN_MINUTES` | `45` | Aynı coin için tekrar bildirim süresi. |
+| `REMINDER_MINUTES` | `30,15` | Funding'e kaç dk kala hatırlatsın (boş = kapalı). |
 | `REALERT_DELTA` | `0.3` | Funding bu kadar puan artarsa cooldown'u bekleme. |
 | `HEARTBEAT_HOURS` | `24` | "Çalışıyorum" özeti sıklığı (0 = kapat). |
 | `MAPPING_REFRESH_HOURS` | `6` | Binance listesi yenileme sıklığı. |

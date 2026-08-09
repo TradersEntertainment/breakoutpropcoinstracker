@@ -51,6 +51,26 @@ POSITION_SIZE = _env_num("POSITION_SIZE_USD", 10000)          # $ — kazanç ö
 TZ_OFFSET_HOURS = _env_num("TZ_OFFSET_HOURS", 3)              # saat gösterimi (TR = +3)
 RUN_ONCE = os.environ.get("RUN_ONCE", "") == "1"
 
+
+def _env_minutes(name: str, default: str) -> list[int]:
+    """Virgülle ayrılmış dakika listesi → büyükten küçüğe sıralı."""
+    marks: set[int] = set()
+    for part in (os.environ.get(name, "") or default).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(float(part))
+        except ValueError:
+            continue
+        if value > 0:
+            marks.add(value)
+    return sorted(marks, reverse=True)
+
+
+# Funding saatine kaç dakika kala hatırlatma atılacağı
+REMINDER_MARKS = _env_minutes("REMINDER_MINUTES", "30,15")
+
 LOCAL_TZ = timezone(timedelta(hours=TZ_OFFSET_HOURS))
 
 FAPI = "https://fapi.binance.com/fapi/v1"
@@ -303,6 +323,7 @@ def format_coin_block(
     interval_hours: float,
     hl_rate_pct_hour: float | None,
     ticker: dict | None = None,
+    is_reminder: bool = False,
 ) -> str:
     """Tek coin için bildirim bloğu.
 
@@ -346,7 +367,8 @@ def format_coin_block(
     head = ""
     if next_funding_ms:
         # Kurgu funding saatine göre kurulduğu için kalan süre en başta durur
-        head = f"⏳ <b>{fmt_duration(minutes_until(next_funding_ms / 1000))} kaldı</b> · "
+        clock = "⏰" if is_reminder else "⏳"
+        head = f"{clock} <b>{fmt_duration(minutes_until(next_funding_ms / 1000))} kaldı</b> · "
     head += f"{icon} <b>{hl_name}</b> · Binance <b>{rate_pct:+.4f}%</b>/{interval_hours:g}sa"
     if hl_rate_pct_hour is None:
         head += " · HL veri yok"
@@ -421,6 +443,8 @@ def startup_message(cfg: dict, mapping: dict[str, str], unmatched: list[str]) ->
         "🤖 <b>Breakout Prop Funding Botu başladı</b>",
         f"Eşik: |funding| ≥ {FUNDING_THRESHOLD:g}% (üst sınır yok, +/- fark etmez)",
         f"Kontrol: {CHECK_INTERVAL} sn • Cooldown: {COOLDOWN_MINUTES:g} dk",
+        f"⏰ Hatırlatma: funding'e {', '.join(f'{m} dk' for m in REMINDER_MARKS)} kala"
+        if REMINDER_MARKS else "⏰ Hatırlatma: kapalı",
         f"✅ Binance'te eşleşen: {len(mapping)}/{total}",
     ]
     if renamed:
@@ -462,12 +486,25 @@ def scan(
     mapping: dict[str, str],
     intervals: dict[str, float],
     last_alerts: dict[str, tuple[float, float]],
+    reminded: dict[tuple[str, float], set[int]] | None = None,
 ) -> tuple[list[str], dict[str, dict]]:
-    """Bir tarama yapar; bildirim bloklarını ve premium verisini döndürür."""
+    """Bir tarama yapar; bildirim bloklarını ve premium verisini döndürür.
+
+    İki tetikleyici var:
+      1. Coin eşiği aştığında (cooldown/artış kuralına tabi)
+      2. Funding saatine REMINDER_MARKS dakika kala, coin hâlâ eşiğin
+         üstündeyse — cooldown'a bakmadan (hatırlatma)
+    """
+    if reminded is None:
+        reminded = {}
     premium = fetch_premium_index()
     now = time.time()
 
-    triggered: list[tuple[str, str, float]] = []
+    # Geçmiş funding döngülerinin hatırlatma kayıtlarını temizle
+    for key in [k for k in reminded if k[1] < now]:
+        del reminded[key]
+
+    triggered: list[tuple[str, str, float, bool]] = []
     for hl_name, symbol in mapping.items():
         data = premium.get(symbol)
         if not data:
@@ -477,14 +514,31 @@ def scan(
             # Eşiğin altına düştü → bir sonraki aşımda tekrar anında bildir
             last_alerts.pop(symbol, None)
             continue
+
+        next_funding = safe_float(data.get("nextFundingTime")) / 1000
+        minutes_left = minutes_until(next_funding) if next_funding else None
+
+        due_marks: list[int] = []
+        if minutes_left is not None and REMINDER_MARKS:
+            consumed = reminded.setdefault((symbol, next_funding), set())
+            due_marks = [m for m in REMINDER_MARKS if minutes_left <= m and m not in consumed]
+
         previous = last_alerts.get(symbol)
-        due = (
+        cooldown_due = (
             previous is None
             or now - previous[0] >= COOLDOWN_MINUTES * 60
             or abs(rate_pct) >= previous[1] + REALERT_DELTA
         )
-        if due:
-            triggered.append((hl_name, symbol, rate_pct))
+
+        if due_marks or cooldown_due:
+            # İlk kez bildiriyorsak "keşif", coin zaten bilinirken süre
+            # işaretine takıldıysa "hatırlatma"
+            triggered.append((hl_name, symbol, rate_pct, bool(due_marks) and previous is not None))
+            if minutes_left is not None:
+                # Mesaj kalan süreyi zaten taşıyor; geçilmiş tüm işaretleri tüket
+                reminded.setdefault((symbol, next_funding), set()).update(
+                    m for m in REMINDER_MARKS if minutes_left <= m
+                )
 
     blocks: list[str] = []
     if triggered:
@@ -492,7 +546,7 @@ def scan(
         tickers = fetch_ticker_24h()
         # En yüksek |funding| en üstte
         triggered.sort(key=lambda item: abs(item[2]), reverse=True)
-        for hl_name, symbol, rate_pct in triggered:
+        for hl_name, symbol, rate_pct, is_reminder in triggered:
             blocks.append(
                 format_coin_block(
                     hl_name,
@@ -502,6 +556,7 @@ def scan(
                     intervals.get(symbol, 8.0),
                     hl_funding.get(hl_name),
                     tickers.get(symbol),
+                    is_reminder,
                 )
             )
             last_alerts[symbol] = (now, abs(rate_pct))
@@ -530,6 +585,7 @@ def main() -> None:
     send_telegram(startup_message(cfg, mapping, unmatched))
 
     last_alerts: dict[str, tuple[float, float]] = {}
+    reminded: dict[tuple[str, float], set[int]] = {}
     consecutive_failures = 0
     last_failure_notice = 0.0
     started = time.time()
@@ -550,7 +606,7 @@ def main() -> None:
                 intervals = fetch_funding_intervals()
                 next_mapping_refresh = cycle_start + MAPPING_REFRESH_HOURS * 3600
 
-            blocks, premium = scan(mapping, intervals, last_alerts)
+            blocks, premium = scan(mapping, intervals, last_alerts, reminded)
             if blocks:
                 # Başlık yok — her blok kendi başına okunur
                 send_telegram(SEPARATOR.join(blocks))
