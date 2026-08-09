@@ -1,0 +1,17 @@
+{
+  "_comment": "Breakout Prop'ta listeli coinler (Hyperliquid isimleriyle). 'overrides': HL ismi -> Binance sembolü (otomatik eşleşme yanlışsa düzelt). 'exclude': hiç takip etme.",
+  "assets": [
+    "BTC", "ETH", "SOL", "HYPE", "PUMP", "ZEC", "KAITO", "XRP", "XMR", "CASHCAT",
+    "TAO", "LIT", "SUI", "ENA", "DOGE", "FARTCOIN", "ACE", "NEAR", "UNI", "WLD",
+    "CRV", "BNB", "ONDO", "SAGA", "VVV", "kPEPE", "ICP", "AAVE", "PENGU", "ADA",
+    "LTC", "CC", "kBONK", "ZRO", "DOT", "LINK", "PAXG", "ARB", "PEOPLE", "XPL",
+    "JUP", "LDO", "AVAX", "TRX", "WLFI", "INJ", "PYTH", "BCH", "TRUMP", "BOME",
+    "ALGO", "JTO", "kSHIB", "ASTER", "ETHFI", "XLM", "APT", "MORPHO", "CFX", "GRAM",
+    "POL", "MON", "WIF", "HBAR", "PENDLE", "CHIP", "AERO", "MNT", "FET", "RENDER",
+    "MEGA", "VIRTUAL", "W", "STBL", "SKY", "SPX", "OP", "RUNE", "MET", "GRASS",
+    "SYRUP", "EIGEN", "STRK", "ETC", "SEI", "FIL", "ATOM", "STABLE", "POPCAT", "KAS",
+    "BERA", "TIA", "PURR", "DYDX", "ENS", "LINEA"
+  ],
+  "overrides": {},
+  "exclude": []
+}
