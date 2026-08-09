@@ -13,11 +13,11 @@ HL'de funding saat başı ödendiği için genelde çok daha küçüktür; fark 
 
 ## Bildirim örneği
 
-Başlık/footer yok. **İlk satır** telefon bildiriminde görünen tek satırdır;
-funding'ler ve net fark oraya konur, ayrıntı altta:
+Başlık/footer yok. **İlk satır** telefon bildiriminde görünen satırdır; Binance
+ödemesine kalan süre, funding'ler ve net fark oraya konur, ayrıntı altta:
 
 ```
-🔴 KAITO · Binance -0.7069%/8sa · HL -0.0125%/1sa · Fark +0.6944%
+⏳ 46 dk kaldı · 🔴 KAITO · Binance -0.7069%/8sa · HL -0.0125%/1sa · Fark +0.6944%
 KAITOUSDT · $0.6612 · 24s -4.18%
 
 💰 Binance: -0.7069% / 8sa  →  saatlik -0.0884%

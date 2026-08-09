@@ -343,7 +343,11 @@ def format_coin_block(
         )
 
     # ── 1. satır: bildirim önizlemesi ──
-    head = f"{icon} <b>{hl_name}</b> · Binance <b>{rate_pct:+.4f}%</b>/{interval_hours:g}sa"
+    head = ""
+    if next_funding_ms:
+        # Kurgu funding saatine göre kurulduğu için kalan süre en başta durur
+        head = f"⏳ <b>{fmt_duration(minutes_until(next_funding_ms / 1000))} kaldı</b> · "
+    head += f"{icon} <b>{hl_name}</b> · Binance <b>{rate_pct:+.4f}%</b>/{interval_hours:g}sa"
     if hl_rate_pct_hour is None:
         head += " · HL veri yok"
     else:
