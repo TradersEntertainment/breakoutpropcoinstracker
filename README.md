@@ -17,25 +17,40 @@ Başlık/footer yok. **İlk satır** telefon bildiriminde görünen tek satırd�
 funding'ler ve net fark oraya konur, ayrıntı altta:
 
 ```
-🔴 KAITO · Binance -0.7069% · HL -0.0125% · Fark +0.6069%
+🔴 KAITO · Binance -0.7069%/8sa · HL -0.0125%/1sa · Fark +0.6944%
 KAITOUSDT · $0.6612 · 24s -4.18%
 
 💰 Binance: -0.7069% / 8sa  →  saatlik -0.0884%
 🌊 Hyperliquid: -0.0125% / 1sa  →  8 saatte -0.1000%
-⚖️ Fark: +0.6069% / 8sa  ·  yıllık ~%665
+⚖️ Fark: +0.6944% — Binance'in 8sa'lik ödemesi eksi HL'de 1 saatlik funding
+   Her periyotta yakalarsan yıllık ~%760  ·  tam 8sa tutarsan +0.6069%
 
-⏳ Binance ödemesi: 46 dk sonra (20:18)
-🕐 HL ödemesi: 28 dk sonra (20:00)
+⏳ Binance ödemesi: 46 dk sonra (20:27)
+🕐 HL ödemesi: 19 dk sonra (20:00)
 
 📍 Binance LONG + HL SHORT
-   Binance long 0.7069% alır · HL short 0.1000% öder
-   10.000$ bacak başına ≈ +60,69$ / 8sa
+   Binance long 0.7069% alır (tek ödeme) · HL short saatte 0.0125% öder
+   10.000$ bacak başına ≈ +69,44$ (funding'i al, ~1 saat tut)
 ```
 
-**Fark** satırı iki bacaklı kurgunun net getirisidir: Binance bacağının aldığı
-funding eksi HL bacağının ödediği funding. Yön otomatik seçilir — iki
-kombinasyondan hangisi pozitif net veriyorsa o yazılır (HL funding'i Binance'i
-aşarsa yön kendiliğinden ters döner). Saatler TR saatidir (`TZ_OFFSET_HOURS`).
+### "Fark" nasıl hesaplanır
+
+Binance funding'i **periyot sonunda tek seferde** ödenir (8 veya 4 saatte bir);
+Hyperliquid'de ise **her saat başı** işler. Kurgu bu asimetriyi kullanır:
+funding saatinden hemen önce gir, ödemeyi al, kısa süre sonra çık. O zaman
+Binance'in tam periyot ödemesini alırsın ama HL'de sadece ~1 saatlik funding
+ödersin.
+
+```
+Fark = Binance'in periyot ödemesi − HL'de 1 saatlik funding
+     = 0.7069% − 0.0125% = 0.6944%
+```
+
+Pozisyonu tam periyot boyunca tutarsan HL 8 kez keser, o senaryo da ikinci
+satırda ayrıca yazar (`tam 8sa tutarsan +0.6069%`). Yön otomatik seçilir: iki
+kombinasyondan hangisi pozitif net veriyorsa o yazılır — HL'nin 1 saatlik
+funding'i Binance'in tek ödemesini aşarsa yön kendiliğinden ters döner.
+Saatler TR saatidir (`TZ_OFFSET_HOURS`).
 
 ## Nasıl çalışır
 

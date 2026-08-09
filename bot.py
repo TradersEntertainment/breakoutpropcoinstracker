@@ -319,32 +319,35 @@ def format_coin_block(
         leg_detail = None
     else:
         hl_per_interval = hl_rate_pct_hour * interval_hours
-        # İki bacaklı kurgunun net getirisi; hangisi pozitifse o taraf doğru
-        net_long_binance = -rate_pct + hl_per_interval   # Binance LONG + HL SHORT
-        net_short_binance = rate_pct - hl_per_interval   # Binance SHORT + HL LONG
-        if net_long_binance >= net_short_binance:
-            net = net_long_binance
+        # Asıl kurgu: Binance'in tek seferlik periyot ödemesini al, HL'de
+        # funding saatlik işlediği için sadece ~1 saatlik funding öde.
+        snipe_long_binance = -rate_pct + hl_rate_pct_hour   # Binance LONG + HL SHORT
+        snipe_short_binance = rate_pct - hl_rate_pct_hour   # Binance SHORT + HL LONG
+        if snipe_long_binance >= snipe_short_binance:
+            net = snipe_long_binance
+            net_full = -rate_pct + hl_per_interval          # tam periyot tutulursa
             legs = "Binance LONG + HL SHORT"
             binance_side, hl_side = "long", "short"
-            binance_leg, hl_leg = -rate_pct, hl_per_interval
+            binance_leg, hl_leg = -rate_pct, hl_rate_pct_hour
         else:
-            net = net_short_binance
+            net = snipe_short_binance
+            net_full = rate_pct - hl_per_interval
             legs = "Binance SHORT + HL LONG"
             binance_side, hl_side = "short", "long"
-            binance_leg, hl_leg = rate_pct, -hl_per_interval
+            binance_leg, hl_leg = rate_pct, -hl_rate_pct_hour
         b_verb = "alır" if binance_leg >= 0 else "öder"
         h_verb = "alır" if hl_leg >= 0 else "öder"
         leg_detail = (
-            f"   Binance {binance_side} {abs(binance_leg):.4f}% {b_verb} · "
-            f"HL {hl_side} {abs(hl_leg):.4f}% {h_verb}"
+            f"   Binance {binance_side} {abs(binance_leg):.4f}% {b_verb} (tek ödeme) · "
+            f"HL {hl_side} saatte {abs(hl_leg):.4f}% {h_verb}"
         )
 
     # ── 1. satır: bildirim önizlemesi ──
-    head = f"{icon} <b>{hl_name}</b> · Binance <b>{rate_pct:+.4f}%</b>"
+    head = f"{icon} <b>{hl_name}</b> · Binance <b>{rate_pct:+.4f}%</b>/{interval_hours:g}sa"
     if hl_rate_pct_hour is None:
         head += " · HL veri yok"
     else:
-        head += f" · HL {hl_rate_pct_hour:+.4f}% · Fark <b>{net:+.4f}%</b>"
+        head += f" · HL {hl_rate_pct_hour:+.4f}%/1sa · Fark <b>{net:+.4f}%</b>"
     lines = [head]
 
     # ── 2. satır: bağlam ──
@@ -371,8 +374,12 @@ def format_coin_block(
         )
         annual = net * (24 / interval_hours) * 365
         lines.append(
-            f"⚖️ <b>Fark:</b> {net:+.4f}% / {interval_hours:g}sa"
-            f"  ·  yıllık ~%{fmt_thousands(annual)}"
+            f"⚖️ <b>Fark:</b> <b>{net:+.4f}%</b> — Binance'in {interval_hours:g}sa'lik"
+            f" ödemesi eksi HL'de 1 saatlik funding"
+        )
+        lines.append(
+            f"   Her periyotta yakalarsan yıllık ~%{fmt_thousands(annual)}"
+            f"  ·  tam {interval_hours:g}sa tutarsan {net_full:+.4f}%"
         )
 
     lines.append("")
@@ -396,7 +403,7 @@ def format_coin_block(
         lines.append(
             f"   {fmt_thousands(POSITION_SIZE)}$ bacak başına ≈"
             f" <b>{'+' if profit >= 0 else '-'}{fmt_thousands(abs(profit), 2)}$</b>"
-            f" / {interval_hours:g}sa"
+            f" (funding'i al, ~1 saat tut)"
         )
     return "\n".join(lines)
 
