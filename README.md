@@ -1,12 +1,14 @@
 # Breakout Prop Tracker
 
-Breakout Prop'ta (Hyperliquid) listeli coinler için üç parça, tek Railway servisi:
+Breakout Prop'ta (Hyperliquid) listeli coinler için dört parça, tek Railway servisi:
 
 1. **Funding alarmı** → `CHAT_ID` kanalına: Binance funding'i mutlak değerce
    %0.7'yi geçen coinler (aşağıda).
 2. **Range finder** → `RANGE_CHAT_ID` kanalına: bir kanal içinde gitgel yapan
    (alçalarak/yükselerek de olsa) coinler.
 3. **Dashboard** → web sayfası: iki tarafın canlı durumu, sparkline'larla.
+4. **Simülatör** → range stratejisini kağıt üzerinde otomatik uygular
+   (10.000$, 10x, ücretler dahil) ve her işlemi analiz için kaydeder.
 
 ## 1) Funding alarmı
 
@@ -140,6 +142,44 @@ yapacağını doğrudan söyler:
 Altında range kartları (eğimli kanal + sparkline + "şu an alt/üst bantta"
 rozetleri), tüm coinlerin skor tablosu (elenme sebepleriyle) ve funding
 tablosu (HL oranı ve aksiyon kolonuyla) var.
+
+## 4) Simülatör — kağıt üzerinde range ticareti
+
+Dashboard'ın önerdiği range işlemlerini gerçek zamanlı fiyatla otomatik
+"uygular" ve sonuçları dashboard'daki **🧪 Simülasyon** bölümünde gösterir.
+Amaç: birkaç gün veri biriktirip stratejinin gerçekte ne yaptığını görmek.
+
+Kurallar:
+- **Giriş:** range'deki coin bandın kenarına gelince (alt → LONG, üst → SHORT),
+  beklenen kâr `RANGE_MIN_PROFIT`'in üstündeyse. Hesap 5 eşit slota bölünür:
+  slot marjini = bakiye/5, notional = marjin × 10x.
+- **Çıkış:** karşı banda varınca (**hedef**), bant %25'ten fazla kırılınca
+  (**stop**), skor düşünce (**yapı bozuldu**), beklenen tur süresinin 3 katı
+  geçince (**zaman aşımı**), zarar marjini yerse (**likidasyon**).
+- **Maliyetler:** her iki yönde taker komisyonu (%0.045/taraf) + kayma (%0.02).
+- Kapanan her işlemde giriş anındaki **skor, genişlik, dokunuş, beklenen tur
+  süresi ve beklenen kâr** da kaydedilir → `/api/sim` tüm ham veriyi döker;
+  "hangi skorlar/genişlikler para kazandırıyor" analizini bununla yaparız.
+
+⚠️ **Kalıcılık:** durum `sim_state.json`'a yazılır. Railway'de her deploy
+konteyneri sıfırladığı için veri kaybolmasın istiyorsan servise bir
+**Volume** bağla (Service → Settings → Volumes → mount path `/data`) ve
+`SIM_STATE_FILE=/data/sim_state.json` değişkenini ekle. Volume yoksa
+simülasyon her deploy'da 10.000$'dan yeniden başlar (çalışmaya devam eder).
+
+Simülatör ayarları:
+
+| Değişken | Varsayılan | Açıklama |
+|---|---|---|
+| `SIM_ENABLED` | `1` | `0` = simülasyonu kapat. |
+| `SIM_START_BALANCE` | `10000` | Başlangıç bakiyesi ($). |
+| `SIM_LEVERAGE` | `10` | Kaldıraç. |
+| `SIM_MAX_POSITIONS` | `5` | Aynı anda en çok pozisyon (slot sayısı). |
+| `SIM_FEE_PCT` | `0.045` | Taraf başına komisyon (%). |
+| `SIM_SLIPPAGE_PCT` | `0.02` | Taraf başına kayma (%). |
+| `SIM_COOLDOWN_MINUTES` | `30` | Kapanan coine tekrar giriş bekleme süresi. |
+| `SIM_TIME_STOP_MULT` | `3` | Beklenen tur × N sonra çık (0 = kapalı). |
+| `SIM_STATE_FILE` | `sim_state.json` | Durum dosyası yolu (Volume için değiştir). |
 
 ## Kurulum
 

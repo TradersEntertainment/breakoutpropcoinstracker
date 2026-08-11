@@ -14,6 +14,7 @@ import traceback
 import bot
 import dashboard
 import range_finder
+import simulator
 from bot import log
 
 
@@ -38,6 +39,7 @@ def supervise(name: str, target) -> threading.Thread:
 def main() -> None:
     supervise("funding-bot", bot.main)
     supervise("range-finder", range_finder.main)
+    supervise("simulator", simulator.main)
     dashboard.serve()  # ana thread'i işgal eder
 
 

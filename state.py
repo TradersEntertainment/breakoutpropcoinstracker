@@ -9,6 +9,7 @@ _data: dict = {
     "meta": {"started": time.time()},
     "funding": {},
     "ranges": {},
+    "sim": {},
 }
 
 

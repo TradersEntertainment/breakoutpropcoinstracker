@@ -153,6 +153,16 @@ HTML = """<!doctype html>
 <div class="cards" id="actions"><div class="empty">İlk veri bekleniyor…</div></div>
 <div class="watch" id="watch" style="display:none"></div>
 
+<h2>🧪 Simülasyon — kağıt üzerinde</h2>
+<div class="tiles" id="simtiles"></div>
+<div id="simwrap">
+  <div class="cards" id="simboxes" style="margin-top:12px"></div>
+  <h2 style="font-size:12px">Açık pozisyonlar</h2>
+  <div class="tablewrap"><table id="simopen"></table></div>
+  <h2 style="font-size:12px">Son kapanan işlemler</h2>
+  <div class="tablewrap"><table id="simtrades"></table></div>
+</div>
+
 <h2>📦 Range'deki coinler</h2>
 <div class="cards" id="cards"><div class="empty">İlk tarama bekleniyor…</div></div>
 
@@ -365,6 +375,93 @@ function driftTxt(d) {
   return d <= -0.3 ? "↘️ " + s : d >= 0.3 ? "↗️ " + s : "➡️ " + s;
 }
 
+/* Equity eğrisi: küçük çizgi grafik */
+function equitySVG(samples, start) {
+  if (!samples || samples.length < 2) return "";
+  const w = 300, h = 64, p = 6;
+  const vals = samples.map(s => s.equity);
+  const lo = Math.min(...vals, start), hi = Math.max(...vals, start);
+  const X = i => p + (w - 2*p) * i / (vals.length - 1);
+  const Y = v => h - p - (h - 2*p) * (v - lo) / ((hi - lo) || 1);
+  const line = vals.map((v,i) => `${px(X(i))},${px(Y(v))}`).join(" ");
+  const y0 = px(Y(start));
+  return `<svg viewBox="0 0 ${w} ${h}">
+    <line x1="${p}" y1="${y0}" x2="${w-p}" y2="${y0}" stroke="var(--grid)" stroke-width="1"/>
+    <polyline points="${line}" fill="none" stroke="var(--s1)" stroke-width="2"
+      stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${px(X(vals.length-1))}" cy="${px(Y(vals[vals.length-1]))}" r="4"
+      fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+  </svg>`;
+}
+
+function pnlTxt(v) {
+  const cls = v > 0 ? "up" : v < 0 ? "down" : "";
+  return `<span class="${cls}">${fmtUsd(v)}</span>`;
+}
+
+function renderSim(sim, now) {
+  if (!sim || !sim.enabled) {
+    $("simtiles").innerHTML = '<div class="tile"><div class="lbl">Simülasyon</div>' +
+      '<div class="sub">henüz veri yok — ilk tick bekleniyor</div></div>';
+    $("simboxes").innerHTML = ""; $("simopen").innerHTML = ""; $("simtrades").innerHTML = "";
+    return;
+  }
+  const ret = (sim.equity - sim.start_balance) / sim.start_balance * 100;
+  const days = Math.max(1, (now - (sim.since || now)) / 86400).toFixed(1);
+  $("simtiles").innerHTML = [
+    { lbl: "Equity", val: fmtUsd(sim.equity).replace("+",""),
+      sub: (ret >= 0 ? "+" : "") + ret.toFixed(2) + "% · başlangıç " +
+           sim.start_balance.toLocaleString("tr-TR") + "$ · " + days + " gün" },
+    { lbl: "Kapanan işlem", val: sim.trades_total,
+      sub: sim.win_rate === null ? "henüz yok" :
+           "kazanma %" + sim.win_rate + " (" + sim.wins + "K/" + sim.losses + "Z)" },
+    { lbl: "Ortalama K / Z", val: sim.avg_win === null ? "–" :
+        Math.round(sim.avg_win) + "$ / " + (sim.avg_loss === null ? "–" : Math.round(sim.avg_loss) + "$"),
+      sub: sim.avg_held_hours ? "ort. tutma ~" + sim.avg_held_hours + "sa" : "" },
+    { lbl: "Ödenen ücret", val: Math.round(sim.fees_paid) + "$",
+      sub: sim.leverage + "x · %" + sim.fee_pct + "/taraf + %" + sim.slippage_pct + " kayma" },
+  ].map(t => `<div class="tile"><div class="lbl">${t.lbl}</div>` +
+             `<div class="val">${t.val}</div><div class="sub">${esc(t.sub)}</div></div>`).join("");
+
+  const reasons = Object.entries(sim.reason_counts || {})
+    .map(([k,v]) => `${k}: <b>${v}</b>`).join(" · ");
+  $("simboxes").innerHTML = `<div class="card"><div class="lbl" style="color:var(--muted);font-size:12px">
+      Equity eğrisi (saatlik)</div>${equitySVG(sim.equity_samples, sim.start_balance)}</div>` +
+    (reasons ? `<div class="card"><div class="lbl" style="color:var(--muted);font-size:12px">
+      Çıkış sebepleri</div><div class="meta" style="margin-top:8px">${reasons}</div>
+      <div class="why" style="margin-top:8px;color:var(--muted);font-size:12px">
+      Tam işlem verisi: <b>/api/sim</b></div></div>` : "");
+
+  $("simopen").innerHTML =
+    "<tr><th>Coin</th><th>Yön</th><th>Giriş</th><th>Şimdi</th><th>uPnL</th>" +
+    "<th>Hedef</th><th>Süre</th><th>Beklenen</th></tr>" +
+    ((sim.positions || []).length ? sim.positions.map(p => `<tr>
+      <td class="coin">${esc(p.coin)}</td>
+      <td>${badge(p.side)}</td>
+      <td>${fmtPrice(p.entry)}</td>
+      <td>${fmtPrice(p.price)}</td>
+      <td>${pnlTxt(p.upnl)} <span class="why">(%${p.upnl_pct_margin} marjin)</span></td>
+      <td>${fmtPrice(p.target)} <span class="why">(+%${(p.expected_pct ?? 0).toFixed(1)})</span></td>
+      <td>${p.held_hours}sa</td>
+      <td>${swingTxt(p.swing_hours) || "–"}</td>
+    </tr>`).join("") : '<tr><td colspan="8" class="empty">Açık pozisyon yok — kenar bekleniyor.</td></tr>');
+
+  $("simtrades").innerHTML =
+    "<tr><th>Coin</th><th>Yön</th><th>PnL</th><th>Ücret</th><th>Sebep</th>" +
+    "<th>Süre</th><th>Beklenen</th><th>Skor</th><th>Kapanış</th></tr>" +
+    ((sim.recent_trades || []).length ? sim.recent_trades.map(t => `<tr>
+      <td class="coin">${esc(t.coin)}</td>
+      <td>${badge(t.side)}</td>
+      <td>${pnlTxt(t.pnl)} <span class="why">(%${t.pnl_pct_margin})</span></td>
+      <td>${t.fees}$</td>
+      <td>${esc(t.reason)}</td>
+      <td>${t.held_hours}sa</td>
+      <td>${swingTxt(t.swing_hours) || "–"}</td>
+      <td>${t.score ?? "–"}</td>
+      <td>${ts(t.closed)}</td>
+    </tr>`).join("") : '<tr><td colspan="9" class="empty">Henüz kapanan işlem yok.</td></tr>');
+}
+
 function render(data) {
   const now = data.meta.now || (Date.now()/1000);
   window.__now = now;
@@ -418,6 +515,8 @@ function render(data) {
       bindSpark(svg, actMs[i], meta);
     });
   }
+
+  renderSim(data.sim, now);
 
   const watch = watchRows(fd, rg, now);
   if (watch.length) {
@@ -574,6 +673,16 @@ class Handler(BaseHTTPRequestHandler):
                 payload["meta"]["tz_offset_hours"] = bot.TZ_OFFSET_HOURS
                 self._send(200, "application/json; charset=utf-8",
                            json.dumps(payload).encode("utf-8"))
+            elif self.path.startswith("/api/sim"):
+                # Tam işlem geçmişi — analiz için ham veri
+                try:
+                    import simulator
+                    raw = (json.loads(simulator.STATE_FILE.read_text(encoding="utf-8"))
+                           if simulator.STATE_FILE.exists() else {})
+                except Exception:
+                    raw = {}
+                self._send(200, "application/json; charset=utf-8",
+                           json.dumps(raw).encode("utf-8"))
             elif self.path in ("/", "/index.html"):
                 self._send(200, "text/html; charset=utf-8", HTML.encode("utf-8"))
             elif self.path == "/health":
