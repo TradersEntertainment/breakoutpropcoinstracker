@@ -56,6 +56,9 @@ EDGE_ZONE = _env_num("EDGE_ZONE", 0.15)           # konum <= 0.15 alt bant, >= 0
 EDGE_COOLDOWN_MIN = _env_num("EDGE_COOLDOWN_MINUTES", 90)
 
 RUN_ONCE = os.environ.get("RUN_ONCE", "") == "1"
+# Varsayılan KAPALI: range sinyalleri dashboard'da gösterilir; Telegram
+# bildirimi istersen RANGE_ALERTS=1 + RANGE_CHAT_ID ayarla.
+RANGE_ALERTS = os.environ.get("RANGE_ALERTS", "0") != "0"
 
 _INTERVAL_MINUTES = {
     "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
@@ -344,6 +347,7 @@ def publish_range_state(results: dict[str, dict], tracker: dict, sweep_seconds: 
         "lookback_hours": LOOKBACK_HOURS,
         "score_enter": SCORE_ENTER,
         "score_exit": SCORE_EXIT,
+        "edge_zone": EDGE_ZONE,
         "ranging_count": len(ranging),
         "coins": coins,
     })
@@ -372,7 +376,9 @@ def startup_message(mapping_size: int) -> str:
 
 def main() -> None:
     log("Range finder başlıyor…")
-    if not RANGE_CHAT_ID:
+    if not RANGE_ALERTS:
+        log("Range Telegram bildirimleri KAPALI (RANGE_ALERTS=1 ile açılır); sonuçlar dashboard'da.")
+    elif not RANGE_CHAT_ID:
         log("UYARI: RANGE_CHAT_ID tanımlı değil → range mesajları sadece log'a yazılacak.")
 
     cfg = load_assets_config()
@@ -386,7 +392,7 @@ def main() -> None:
 
     mapping, unmatched = build_mapping(cfg, perp_symbols)
     log(f"Range finder {len(mapping)} coin izleyecek ({len(unmatched)} eşleşmedi).")
-    send_telegram(startup_message(len(mapping)), RANGE_CHAT_ID)
+    send_telegram(startup_message(len(mapping)), RANGE_CHAT_ID, enabled=RANGE_ALERTS)
 
     tracker: dict = {"ranging": set(), "edge_last": {}}
     next_mapping_refresh = time.time() + bot.MAPPING_REFRESH_HOURS * 3600
@@ -404,7 +410,7 @@ def main() -> None:
 
             blocks = new_blocks + edge_blocks + break_blocks
             if blocks:
-                send_telegram(SEPARATOR.join(blocks), RANGE_CHAT_ID)
+                send_telegram(SEPARATOR.join(blocks), RANGE_CHAT_ID, enabled=RANGE_ALERTS)
                 log(
                     f"Range bildirimi: {len(new_blocks)} yeni, "
                     f"{len(edge_blocks)} bant, {len(break_blocks)} kırılma."

@@ -82,9 +82,11 @@ Saatler TR saatidir (`TZ_OFFSET_HOURS`).
 
 ## 2) Range finder
 
-Aynı coin listesini kullanır; **ayrı bir Telegram kanalına** (`RANGE_CHAT_ID`)
-bildirir. Aranan form: sürekli alçalarak/yükselerek de olsa **bir bant içinde
-gitgel yapan** fiyat (ör. KAITO'nun 0.66–0.72 arasında defalarca gidip gelmesi).
+Aynı coin listesini kullanır. Aranan form: sürekli alçalarak/yükselerek de olsa
+**bir bant içinde gitgel yapan** fiyat (ör. KAITO'nun 0.66–0.72 arasında
+defalarca gidip gelmesi). Sinyaller **dashboard'da** gösterilir; Telegram
+bildirimi varsayılan olarak **kapalıdır** (açmak istersen `RANGE_ALERTS=1` +
+`RANGE_CHAT_ID` ayarla).
 
 Nasıl bulur: son 24 saatin 15 dakikalık kapanışlarına doğrusal bir trend
 uydurur (eğimli kanal), trendden arındırılmış seride bandı (p5–p95) çıkarır ve
@@ -97,21 +99,35 @@ uydurur (eğimli kanal), trendden arındırılmış seride bandı (p5–p95) ç�
 | Trendin banda oranı | ≤ 1.5× (eğimli kanal serbest, düz trend elenir) |
 | Skor (dokunuş + genişlik + eğim + verimlilik) | ≥ 60 girer, < 45 çıkar |
 
-Bildirimler:
+Sinyal türleri (dashboard'da; `RANGE_ALERTS=1` ise Telegram'a da):
 - **📦 Range'e girdi** — skor, genişlik, dokunuş, bant seviyeleri, konum, eğim.
 - **🎯 Alt/üst bant** — range'deki coin bandın %15'lik kenarına gelince
-  (90 dk arayla; gitgel al-satı için giriş zamanlaması).
+  (gitgel al-satı için giriş zamanlaması).
 - **💥 Range kırıldı** — fiyat bandın dışına taştı ya da yapı bozuldu.
 
 Konum: **%0 = alt bant, %100 = üst bant.** Skor histerezislidir (60 girer,
 45'te çıkar) — sınırda titreyip spam yapmaz. Tarama 15 dk'da bir.
 
-## 3) Dashboard
+## 3) Dashboard — "ne yapmalı" ekranı
 
-Servis bir web sayfası da sunar: range kartları (eğimli kanal + sparkline),
-tüm coinlerin skor tablosu (elenme sebepleriyle) ve funding tablosu; 60 sn'de
-bir kendini yeniler. Açmak için Railway'de: **Service → Settings → Networking
-→ Generate Domain.** Çıkan adres dashboard'dur (`/api/state` ham JSON verir).
+Açmak için Railway'de: **Service → Settings → Networking → Generate Domain.**
+Çıkan adres dashboard'dur (`/api/state` ham JSON verir), 60 sn'de bir yenilenir.
+
+Sayfanın en üstü **🎯 Ne yapmalı** panosudur — neyi long, neyi short
+yapacağını doğrudan söyler:
+
+- **Funding arb kartı**: eşiği geçen coin için HL bacağının yönü
+  (funding negatif → **HL SHORT** + Binance LONG hedge; pozitif → **HL LONG**
+  + Binance SHORT hedge), fark, tahmini kazanç ve Binance ödemesine kalan
+  süre ("ödemeden önce gir" uyarısıyla).
+- **Range kartı**: range'deki coin bandın kenarına gelince — alt bantta
+  **LONG** (hedef üst bant, + beklenen %), üst bantta **SHORT** (hedef alt bant).
+- **📡 Yaklaşanlar**: henüz tetiklenmemiş adaylar — eşiğe yaklaşan funding'ler
+  ve banda yaklaşan range coinleri, ne kadar kaldığıyla.
+
+Altında range kartları (eğimli kanal + sparkline + "şu an alt/üst bantta"
+rozetleri), tüm coinlerin skor tablosu (elenme sebepleriyle) ve funding
+tablosu (HL oranı ve aksiyon kolonuyla) var.
 
 ## Kurulum
 
@@ -133,15 +149,15 @@ başlar). `RANGE_CHAT_ID` boş kalırsa range mesajları sadece log'a yazılır.
 2. Service → **Variables** sekmesinde ekle:
    - `TELEGRAM_TOKEN` = BotFather token'ı
    - `CHAT_ID` = funding kanalının id'si
-   - `RANGE_CHAT_ID` = range kanalının id'si
-3. Deploy et. Loglarda iki başlangıç raporu görmelisin; aynı raporlar ilgili
-   Telegram kanallarına da düşer.
+   - (isteğe bağlı) `RANGE_ALERTS=1` + `RANGE_CHAT_ID` = range bildirimleri için
+3. Deploy et.
 4. Dashboard için: Service → Settings → **Networking → Generate Domain**.
 
 ## Ayarlar (opsiyonel env değişkenleri)
 
 | Değişken | Varsayılan | Açıklama |
 |---|---|---|
+| `FUNDING_ALERTS` | `1` | `0` yapılırsa funding Telegram bildirimleri susar (dashboard etkilenmez). |
 | `FUNDING_THRESHOLD` | `0.7` | Mutlak eşik (%). |
 | `CHECK_INTERVAL_SECONDS` | `60` | Kontrol sıklığı. |
 | `ALERT_COOLDOWN_MINUTES` | `45` | Aynı coin için tekrar bildirim süresi. |
@@ -157,7 +173,8 @@ Range finder'a özel:
 
 | Değişken | Varsayılan | Açıklama |
 |---|---|---|
-| `RANGE_CHAT_ID` | — | Range bildirimlerinin gideceği kanal (zorunlu). |
+| `RANGE_ALERTS` | `0` | `1` yapılırsa range sinyalleri Telegram'a da gider. |
+| `RANGE_CHAT_ID` | — | Range bildirimlerinin kanalı (`RANGE_ALERTS=1` iken). |
 | `RANGE_INTERVAL` | `15m` | Mum periyodu (`5m`, `15m`, `30m`, `1h`…). |
 | `RANGE_LOOKBACK_HOURS` | `24` | İncelenen pencere. |
 | `RANGE_SCAN_MINUTES` | `15` | Tarama sıklığı. |

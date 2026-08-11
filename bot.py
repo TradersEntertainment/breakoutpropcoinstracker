@@ -53,6 +53,8 @@ MAPPING_REFRESH_HOURS = _env_num("MAPPING_REFRESH_HOURS", 6)
 POSITION_SIZE = _env_num("POSITION_SIZE_USD", 10000)          # $ — kazanç örneği için
 TZ_OFFSET_HOURS = _env_num("TZ_OFFSET_HOURS", 3)              # saat gösterimi (TR = +3)
 RUN_ONCE = os.environ.get("RUN_ONCE", "") == "1"
+# 0 yapılırsa funding Telegram bildirimleri tamamen susar (dashboard çalışmaya devam eder)
+FUNDING_ALERTS = os.environ.get("FUNDING_ALERTS", "1") != "0"
 
 
 def _env_minutes(name: str, default: str) -> list[int]:
@@ -260,7 +262,10 @@ def chunk_message(text: str) -> list[str]:
     return chunks
 
 
-def send_telegram(text: str, chat_id: str | None = None) -> None:
+def send_telegram(text: str, chat_id: str | None = None, enabled: bool = True) -> None:
+    if not enabled:
+        log(f"[KAPALI] Bildirim gönderilmedi:\n{text}")
+        return
     chat = chat_id or CHAT_ID
     if not TELEGRAM_TOKEN or not chat:
         log(f"[DRY-RUN] Telegram ayarlı değil, gidecek mesaj:\n{text}")
@@ -502,11 +507,13 @@ def publish_funding_state(
     unmatched: list[str],
 ) -> None:
     """Dashboard için güncel funding görünümünü paylaşır."""
+    hl_funding = fetch_hyperliquid_funding()  # hata durumunda {} döner
     coins = []
     for hl_name, symbol in mapping.items():
         data = premium.get(symbol)
         if not data:
             continue
+        hl_rate = hl_funding.get(hl_name)
         coins.append({
             "coin": hl_name,
             "symbol": symbol,
@@ -514,6 +521,7 @@ def publish_funding_state(
             "interval_h": intervals.get(symbol, 8.0),
             "next_funding": safe_float(data.get("nextFundingTime")) / 1000,
             "mark_price": safe_float(data.get("markPrice")),
+            "hl_rate_pct": round(hl_rate, 5) if hl_rate is not None else None,
         })
     coins.sort(key=lambda c: abs(c["rate_pct"]), reverse=True)
     state.update("funding", {
@@ -521,6 +529,7 @@ def publish_funding_state(
         "threshold": FUNDING_THRESHOLD,
         "matched": len(mapping),
         "unmatched": unmatched,
+        "position_size": POSITION_SIZE,
         "coins": coins,
     })
 
@@ -625,7 +634,7 @@ def main() -> None:
     mapping, unmatched = build_mapping(cfg, perp_symbols)
     intervals = fetch_funding_intervals()
     log(f"Eşleşen {len(mapping)} coin, eşleşmeyen {len(unmatched)}: {', '.join(unmatched) or '-'}")
-    send_telegram(startup_message(cfg, mapping, unmatched))
+    send_telegram(startup_message(cfg, mapping, unmatched), enabled=FUNDING_ALERTS)
 
     last_alerts: dict[str, tuple[float, float]] = {}
     reminded: dict[tuple[str, float], set[int]] = {}
@@ -653,11 +662,11 @@ def main() -> None:
             publish_funding_state(mapping, intervals, premium, unmatched)
             if blocks:
                 # Başlık yok — her blok kendi başına okunur
-                send_telegram(SEPARATOR.join(blocks))
+                send_telegram(SEPARATOR.join(blocks), enabled=FUNDING_ALERTS)
                 log(f"{len(blocks)} coin için bildirim gönderildi.")
 
             if next_heartbeat and cycle_start >= next_heartbeat:
-                send_telegram(heartbeat_message(mapping, premium, unmatched))
+                send_telegram(heartbeat_message(mapping, premium, unmatched), enabled=FUNDING_ALERTS)
                 next_heartbeat = cycle_start + HEARTBEAT_HOURS * 3600
 
             consecutive_failures = 0
@@ -666,7 +675,8 @@ def main() -> None:
             log(f"Tarama hatası ({consecutive_failures}. kez üst üste):\n{traceback.format_exc()}")
             if consecutive_failures >= 10 and time.time() - last_failure_notice > 6 * 3600:
                 send_telegram(
-                    "⚠️ Bot 10+ taramadır Binance verisi alamıyor — Railway loglarını kontrol et."
+                    "⚠️ Bot 10+ taramadır Binance verisi alamıyor — Railway loglarını kontrol et.",
+                    enabled=FUNDING_ALERTS,
                 )
                 last_failure_notice = time.time()
 
