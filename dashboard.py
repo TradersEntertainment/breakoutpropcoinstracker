@@ -153,15 +153,12 @@ HTML = """<!doctype html>
 <div class="cards" id="actions"><div class="empty">İlk veri bekleniyor…</div></div>
 <div class="watch" id="watch" style="display:none"></div>
 
-<h2>🧪 Simülasyon — kağıt üzerinde</h2>
-<div class="tiles" id="simtiles"></div>
-<div id="simwrap">
-  <div class="cards" id="simboxes" style="margin-top:12px"></div>
-  <h2 style="font-size:12px">Açık pozisyonlar</h2>
-  <div class="tablewrap"><table id="simopen"></table></div>
-  <h2 style="font-size:12px">Son kapanan işlemler</h2>
-  <div class="tablewrap"><table id="simtrades"></table></div>
-</div>
+<h2>🧪 Simülasyon — iki strateji yarışıyor</h2>
+<div class="cards" id="simvars"></div>
+<h2 style="font-size:12px">Açık pozisyonlar</h2>
+<div class="tablewrap"><table id="simopen"></table></div>
+<h2 style="font-size:12px">Son kapanan işlemler</h2>
+<div class="tablewrap"><table id="simtrades"></table></div>
 
 <h2>📦 Range'deki coinler</h2>
 <div class="cards" id="cards"><div class="empty">İlk tarama bekleniyor…</div></div>
@@ -400,42 +397,43 @@ function pnlTxt(v) {
 }
 
 function renderSim(sim, now) {
-  if (!sim || !sim.enabled) {
-    $("simtiles").innerHTML = '<div class="tile"><div class="lbl">Simülasyon</div>' +
-      '<div class="sub">henüz veri yok — ilk tick bekleniyor</div></div>';
-    $("simboxes").innerHTML = ""; $("simopen").innerHTML = ""; $("simtrades").innerHTML = "";
+  const variants = (sim && sim.enabled && sim.variants) || [];
+  if (!variants.length) {
+    $("simvars").innerHTML = '<div class="empty">Simülasyon verisi bekleniyor — ilk tick ile gelir.</div>';
+    $("simopen").innerHTML = ""; $("simtrades").innerHTML = "";
     return;
   }
-  const ret = (sim.equity - sim.start_balance) / sim.start_balance * 100;
-  const days = Math.max(1, (now - (sim.since || now)) / 86400).toFixed(1);
-  $("simtiles").innerHTML = [
-    { lbl: "Equity", val: fmtUsd(sim.equity).replace("+",""),
-      sub: (ret >= 0 ? "+" : "") + ret.toFixed(2) + "% · başlangıç " +
-           sim.start_balance.toLocaleString("tr-TR") + "$ · " + days + " gün" },
-    { lbl: "Kapanan işlem", val: sim.trades_total,
-      sub: sim.win_rate === null ? "henüz yok" :
-           "kazanma %" + sim.win_rate + " (" + sim.wins + "K/" + sim.losses + "Z)" },
-    { lbl: "Ortalama K / Z", val: sim.avg_win === null ? "–" :
-        Math.round(sim.avg_win) + "$ / " + (sim.avg_loss === null ? "–" : Math.round(sim.avg_loss) + "$"),
-      sub: sim.avg_held_hours ? "ort. tutma ~" + sim.avg_held_hours + "sa" : "" },
-    { lbl: "Ödenen ücret", val: Math.round(sim.fees_paid) + "$",
-      sub: sim.leverage + "x · %" + sim.fee_pct + "/taraf + %" + sim.slippage_pct + " kayma" },
-  ].map(t => `<div class="tile"><div class="lbl">${t.lbl}</div>` +
-             `<div class="val">${t.val}</div><div class="sub">${esc(t.sub)}</div></div>`).join("");
+  /* Strateji karşılaştırma kartları */
+  $("simvars").innerHTML = variants.map(v => {
+    const ret = (v.equity - v.start_balance) / v.start_balance * 100;
+    const days = Math.max(0.1, (now - (v.since || now)) / 86400).toFixed(1);
+    const reasons = Object.entries(v.reason_counts || {})
+      .map(([k,c]) => `${k}: <b>${c}</b>`).join(" · ");
+    return `<div class="card">
+      <div class="top"><span class="coin">${esc(v.name)}</span>
+        <span class="chip ${ret >= 0 ? "on" : ""}">${(ret>=0?"+":"") + ret.toFixed(2)}%</span></div>
+      <div class="meta">
+        <span>equity <b>${fmtUsd(v.equity).replace("+","")}</b></span>
+        <span>işlem <b>${v.trades_total}</b>${v.win_rate !== null ?
+          " · kazanma <b>%" + v.win_rate + "</b>" : ""}</span>
+        <span>ücret <b>${Math.round(v.fees_paid)}$</b></span>
+        <span>${days} gün</span>
+      </div>
+      ${v.avg_win !== null ? `<div class="meta"><span>ort. K <b class="up">+${Math.round(v.avg_win)}$</b>
+        · ort. Z <b class="down">${Math.round(v.avg_loss ?? 0)}$</b>
+        · tutma ~${v.avg_held_hours}sa</span></div>` : ""}
+      ${equitySVG(v.equity_samples, v.start_balance)}
+      ${reasons ? `<div class="why" style="margin-top:6px">${reasons}</div>` : ""}
+    </div>`;
+  }).join("");
 
-  const reasons = Object.entries(sim.reason_counts || {})
-    .map(([k,v]) => `${k}: <b>${v}</b>`).join(" · ");
-  $("simboxes").innerHTML = `<div class="card"><div class="lbl" style="color:var(--muted);font-size:12px">
-      Equity eğrisi (saatlik)</div>${equitySVG(sim.equity_samples, sim.start_balance)}</div>` +
-    (reasons ? `<div class="card"><div class="lbl" style="color:var(--muted);font-size:12px">
-      Çıkış sebepleri</div><div class="meta" style="margin-top:8px">${reasons}</div>
-      <div class="why" style="margin-top:8px;color:var(--muted);font-size:12px">
-      Tam işlem verisi: <b>/api/sim</b></div></div>` : "");
-
+  /* Açık pozisyonlar (iki strateji birleşik, strateji kolonu ile) */
+  const openRows = variants.flatMap(v => (v.positions || []).map(p => ({v: v.name, p})));
   $("simopen").innerHTML =
-    "<tr><th>Coin</th><th>Yön</th><th>Giriş</th><th>Şimdi</th><th>uPnL</th>" +
-    "<th>Hedef</th><th>Süre</th><th>Beklenen</th></tr>" +
-    ((sim.positions || []).length ? sim.positions.map(p => `<tr>
+    "<tr><th>Strateji</th><th>Coin</th><th>Yön</th><th>Giriş</th><th>Şimdi</th>" +
+    "<th>uPnL</th><th>Hedef</th><th>Süre</th><th>Beklenen</th></tr>" +
+    (openRows.length ? openRows.map(({v, p}) => `<tr>
+      <td class="why">${esc(v)}</td>
       <td class="coin">${esc(p.coin)}</td>
       <td>${badge(p.side)}</td>
       <td>${fmtPrice(p.entry)}</td>
@@ -444,12 +442,17 @@ function renderSim(sim, now) {
       <td>${fmtPrice(p.target)} <span class="why">(+%${(p.expected_pct ?? 0).toFixed(1)})</span></td>
       <td>${p.held_hours}sa</td>
       <td>${swingTxt(p.swing_hours) || "–"}</td>
-    </tr>`).join("") : '<tr><td colspan="8" class="empty">Açık pozisyon yok — kenar bekleniyor.</td></tr>');
+    </tr>`).join("") : '<tr><td colspan="9" class="empty">Açık pozisyon yok — kenar bekleniyor.</td></tr>');
 
+  /* Kapananlar birleşik, kapanışa göre sıralı */
+  const tradeRows = variants
+    .flatMap(v => (v.recent_trades || []).map(t => ({v: v.name, t})))
+    .sort((a,b) => (b.t.closed || 0) - (a.t.closed || 0)).slice(0, 30);
   $("simtrades").innerHTML =
-    "<tr><th>Coin</th><th>Yön</th><th>PnL</th><th>Ücret</th><th>Sebep</th>" +
-    "<th>Süre</th><th>Beklenen</th><th>Skor</th><th>Kapanış</th></tr>" +
-    ((sim.recent_trades || []).length ? sim.recent_trades.map(t => `<tr>
+    "<tr><th>Strateji</th><th>Coin</th><th>Yön</th><th>PnL</th><th>Ücret</th>" +
+    "<th>Sebep</th><th>Süre</th><th>Beklenen</th><th>Skor</th><th>Kapanış</th></tr>" +
+    (tradeRows.length ? tradeRows.map(({v, t}) => `<tr>
+      <td class="why">${esc(v)}</td>
       <td class="coin">${esc(t.coin)}</td>
       <td>${badge(t.side)}</td>
       <td>${pnlTxt(t.pnl)} <span class="why">(%${t.pnl_pct_margin})</span></td>
@@ -459,7 +462,7 @@ function renderSim(sim, now) {
       <td>${swingTxt(t.swing_hours) || "–"}</td>
       <td>${t.score ?? "–"}</td>
       <td>${ts(t.closed)}</td>
-    </tr>`).join("") : '<tr><td colspan="9" class="empty">Henüz kapanan işlem yok.</td></tr>');
+    </tr>`).join("") : '<tr><td colspan="10" class="empty">Henüz kapanan işlem yok.</td></tr>');
 }
 
 function render(data) {
@@ -674,13 +677,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, "application/json; charset=utf-8",
                            json.dumps(payload).encode("utf-8"))
             elif self.path.startswith("/api/sim"):
-                # Tam işlem geçmişi — analiz için ham veri
-                try:
-                    import simulator
-                    raw = (json.loads(simulator.STATE_FILE.read_text(encoding="utf-8"))
-                           if simulator.STATE_FILE.exists() else {})
-                except Exception:
-                    raw = {}
+                # Tam işlem geçmişi (iki strateji) — analiz için ham veri
+                import simulator
+                raw: dict = {"variants": {}}
+                for v in simulator.VARIANTS:
+                    path = simulator.STATE_DIR / f"sim_state_{v['key']}.json"
+                    try:
+                        raw["variants"][v["key"]] = (
+                            json.loads(path.read_text(encoding="utf-8"))
+                            if path.exists() else {}
+                        )
+                        raw["variants"][v["key"]]["name"] = v["name"]
+                    except Exception:
+                        raw["variants"][v["key"]] = {}
                 self._send(200, "application/json; charset=utf-8",
                            json.dumps(raw).encode("utf-8"))
             elif self.path in ("/", "/index.html"):

@@ -1,21 +1,24 @@
 """
-Range Simülatörü (kağıt üzerinde)
-─────────────────────────────────
-Dashboard'ın önerdiği range işlemlerini otomatik uygular: range'deki coin
-bandın kenarına gelince girer (alt bant → LONG, üst bant → SHORT), karşı
-banda varınca kâr alır; bant kırılırsa/yapı bozulursa/süre aşılırsa çıkar.
+Range Simülatörü (kağıt üzerinde, A/B)
+──────────────────────────────────────
+Dashboard'ın önerdiği range işlemlerini iki ayrı stratejiyle otomatik
+uygular — her strateji kendi 10.000$'lık hesabıyla, birebir aynı
+girişlerle:
 
-Varsayılanlar: 10.000$ hesap, 10x kaldıraç, hesap 5 eşit slota bölünür
-(slot başına marjin = bakiye/5, notional = marjin × kaldıraç). Taker
-komisyonu ve kayma her iki yönde düşülür. Zarar marjini yerse likidasyon.
+  1. "Stopsuz"       — girince stop yok; karşı banda (hedefe) varana,
+                       zaman aşımına ya da likidasyona kadar tutar.
+  2. "%1 kırılma"    — fiyat bandı pozisyon aleyhine %1 aşarsa keser
+                       (SHORT: üst bant × 1.01, LONG: alt bant × 0.99).
 
-Her kapanan işlem, giriş anındaki bağlamla (skor, genişlik, beklenen tur
-süresi…) birlikte kaydedilir — birkaç gün sonra "hangi range'ler para
-kazandırıyor" analizi bu veriden yapılır. Durum SIM_STATE_FILE'a yazılır;
-Railway'de kalıcı olması için Volume bağla (bkz. README).
+Ortak kurallar: giriş bandın kenarında (alt → LONG, üst → SHORT, beklenen
+kâr RANGE_MIN_PROFIT üstünde), hesap 5 eşit slot, slot marjini × 10x
+notional, taker komisyonu + kayma iki yönde, beklenen tur süresinin
+3 katında zaman aşımı, zarar marjini yerse likidasyon. İki strateji
+arasındaki TEK fark stop kuralıdır — veri buna göre okunur.
 
-Fiyat kaynağı: funding botunun her dakika çektiği mark price'lar +
-range taramasının bant seviyeleri (state modülü üzerinden, ek API yok).
+Kapanan her işlem giriş bağlamıyla (skor, genişlik, beklenen süre/kâr…)
+kaydedilir; ham veri /api/sim'de. Durum dosyaları yazılabilir /data
+volume'u varsa oraya yazılır (deploy'lar arası kalıcı).
 """
 
 import json
@@ -41,17 +44,38 @@ SIM_ENABLED = os.environ.get("SIM_ENABLED", "1") != "0"
 START_BALANCE = _env_num("SIM_START_BALANCE", 10000)
 LEVERAGE = _env_num("SIM_LEVERAGE", 10)
 MAX_POSITIONS = int(_env_num("SIM_MAX_POSITIONS", 5))
-FEE_PCT = _env_num("SIM_FEE_PCT", 0.045)          # taraf başına taker %
-SLIPPAGE_PCT = _env_num("SIM_SLIPPAGE_PCT", 0.02)  # taraf başına %
+FEE_PCT = _env_num("SIM_FEE_PCT", 0.045)            # taraf başına taker %
+SLIPPAGE_PCT = _env_num("SIM_SLIPPAGE_PCT", 0.02)   # taraf başına %
 COOLDOWN_MIN = _env_num("SIM_COOLDOWN_MINUTES", 30)
 TIME_STOP_MULT = _env_num("SIM_TIME_STOP_MULT", 3)  # beklenen tur × N; 0 = kapalı
+STOP_BREAK_PCT = _env_num("SIM_STOP_BREAK_PCT", 1.0)  # 2. strateji: bant + %1
 TICK_SECONDS = int(_env_num("SIM_TICK_SECONDS", 60))
 SAVE_EVERY_SECONDS = 300
 EQUITY_SAMPLE_SECONDS = 3600
 MAX_EQUITY_SAMPLES = 1000
 
-STATE_FILE = Path(os.environ.get("SIM_STATE_FILE", "")
-                  or Path(__file__).with_name("sim_state.json"))
+
+def _state_dir() -> Path:
+    """SIM_STATE_FILE'ın klasörü > yazılabilir /data > uygulama klasörü."""
+    override = os.environ.get("SIM_STATE_FILE", "").strip()
+    if override:
+        return Path(override).parent
+    data_dir = Path("/data")
+    try:
+        if data_dir.is_dir() and os.access(data_dir, os.W_OK):
+            return data_dir
+    except OSError:
+        pass
+    return Path(__file__).parent
+
+
+STATE_DIR = _state_dir()
+
+VARIANTS = [
+    {"key": "nostop", "name": "Stopsuz", "stop_mode": "none"},
+    {"key": "stop1", "name": f"%{STOP_BREAK_PCT:g} kırılma stopu",
+     "stop_mode": "band_pct", "stop_pct": STOP_BREAK_PCT},
+]
 
 
 def log(message: str) -> None:
@@ -63,7 +87,13 @@ def log(message: str) -> None:
 
 
 class Simulator:
-    def __init__(self, start_balance: float = START_BALANCE):
+    def __init__(self, key: str, name: str, stop_mode: str = "none",
+                 stop_pct: float = 0.0, start_balance: float = START_BALANCE):
+        self.key = key
+        self.name = name
+        self.stop_mode = stop_mode
+        self.stop_pct = stop_pct
+        self.state_file = STATE_DIR / f"sim_state_{key}.json"
         self.data: dict = {
             "created": time.time(),
             "start_balance": start_balance,
@@ -80,27 +110,28 @@ class Simulator:
     # ── kalıcılık ──
     def load(self) -> None:
         try:
-            if STATE_FILE.exists():
-                saved = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if self.state_file.exists():
+                saved = json.loads(self.state_file.read_text(encoding="utf-8"))
                 if isinstance(saved, dict) and "balance" in saved:
                     self.data.update(saved)
-                    log(f"Kayıtlı durum yüklendi: bakiye {self.data['balance']:.2f}$, "
-                        f"{len(self.data['trades'])} kapanmış işlem, "
+                    log(f"[{self.key}] Kayıtlı durum yüklendi: "
+                        f"bakiye {self.data['balance']:.2f}$, "
+                        f"{len(self.data['trades'])} işlem, "
                         f"{len(self.data['positions'])} açık pozisyon.")
         except Exception as error:
-            log(f"Durum dosyası okunamadı, sıfırdan başlıyor: {error}")
+            log(f"[{self.key}] Durum dosyası okunamadı, sıfırdan başlıyor: {error}")
 
     def save(self, force: bool = False) -> None:
         if not force and not self._dirty and time.time() - self._last_save < SAVE_EVERY_SECONDS:
             return
         try:
-            tmp = STATE_FILE.with_suffix(".tmp")
+            tmp = self.state_file.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.data), encoding="utf-8")
-            tmp.replace(STATE_FILE)
+            tmp.replace(self.state_file)
             self._last_save = time.time()
             self._dirty = False
         except Exception as error:
-            log(f"Durum kaydedilemedi: {error}")
+            log(f"[{self.key}] Durum kaydedilemedi: {error}")
 
     # ── yardımcılar ──
     @staticmethod
@@ -115,8 +146,15 @@ class Simulator:
         gross = p["qty"] * (price - p["entry"]) * direction
         return gross - p["entry_fee"]  # çıkış ücreti kapanışta
 
+    def _stop_hit(self, p: dict, price: float) -> bool:
+        if self.stop_mode != "band_pct":
+            return False
+        if p["side"] == "SHORT":
+            return price >= p["band_high"] * (1 + self.stop_pct / 100)
+        return price <= p["band_low"] * (1 - self.stop_pct / 100)
+
     # ── çekirdek ──
-    def tick(self, ranges: dict, funding: dict, now: float | None = None) -> None:
+    def tick(self, ranges: dict, funding: dict, now: float | None = None) -> dict:
         now = now or time.time()
         metrics = {m["coin"]: m for m in ranges.get("coins", []) if m.get("coin")}
         prices = {
@@ -128,13 +166,13 @@ class Simulator:
         overshoot = ranges.get("break_overshoot", 0.25)
         min_profit = ranges.get("min_profit", 0.0)
 
-        self._check_exits(metrics, prices, zone, overshoot, now)
+        self._check_exits(metrics, prices, now)
         self._check_entries(metrics, prices, zone, overshoot, min_profit, now)
         self._sample_equity(prices, metrics, now)
-        self._publish(prices, metrics, now)
         self.save()
+        return self._view(prices, metrics, now)
 
-    def _check_exits(self, metrics, prices, zone, overshoot, now) -> None:
+    def _check_exits(self, metrics, prices, now) -> None:
         for coin, p in list(self.data["positions"].items()):
             m = metrics.get(coin)
             if m and m.get("ranging"):
@@ -145,10 +183,6 @@ class Simulator:
             if not price:
                 continue
             p["last_price"] = price
-            height = p["band_high"] - p["band_low"]
-            if height <= 0:
-                continue
-            pos_now = (price - p["band_low"]) / height
             upnl = self._unrealized(p, price)
 
             reason = None
@@ -158,12 +192,8 @@ class Simulator:
                 reason = "hedef"
             elif p["side"] == "SHORT" and price <= p["target"]:
                 reason = "hedef"
-            elif p["side"] == "LONG" and pos_now <= -overshoot:
-                reason = "stop (bant kırıldı)"
-            elif p["side"] == "SHORT" and pos_now >= 1 + overshoot:
-                reason = "stop (bant kırıldı)"
-            elif m is not None and not m.get("ranging"):
-                reason = "yapı bozuldu"
+            elif self._stop_hit(p, price):
+                reason = f"stop (bant %{self.stop_pct:g} kırıldı)"
             elif TIME_STOP_MULT > 0:
                 limit_h = (p.get("swing_hours") or 8) * TIME_STOP_MULT
                 if now - p["opened"] > limit_h * 3600:
@@ -208,7 +238,7 @@ class Simulator:
         })
         self.data["cooldowns"][coin] = now + COOLDOWN_MIN * 60
         self._dirty = True
-        log(f"KAPANDI {coin} {p['side']} @{exit_price:.6g} · {reason} · "
+        log(f"[{self.key}] KAPANDI {coin} {p['side']} @{exit_price:.6g} · {reason} · "
             f"pnl {pnl:+.2f}$ · bakiye {self.data['balance']:.2f}$")
 
     def _check_entries(self, metrics, prices, zone, overshoot, min_profit, now) -> None:
@@ -268,8 +298,9 @@ class Simulator:
                 "expected_pct": round(expected_pct, 2),
             }
             self._dirty = True
-            log(f"AÇILDI {coin} {side} @{entry:.6g} · marjin {margin:.0f}$ × {LEVERAGE:g}x "
-                f"· hedef {target:.6g} ({expected_pct:+.1f}%)")
+            log(f"[{self.key}] AÇILDI {coin} {side} @{entry:.6g} · "
+                f"marjin {margin:.0f}$ × {LEVERAGE:g}x · hedef {target:.6g} "
+                f"({expected_pct:+.1f}%)")
 
     def _equity(self, prices, metrics) -> float:
         equity = self.data["balance"]
@@ -287,7 +318,7 @@ class Simulator:
         del samples[:-MAX_EQUITY_SAMPLES]
         self._dirty = True
 
-    def _publish(self, prices, metrics, now) -> None:
+    def _view(self, prices, metrics, now) -> dict:
         trades = self.data["trades"]
         wins = [t for t in trades if t["pnl"] > 0]
         losses = [t for t in trades if t["pnl"] <= 0]
@@ -305,21 +336,16 @@ class Simulator:
                 "swing_hours": p.get("swing_hours"),
                 "expected_pct": p.get("expected_pct"),
             })
-        equity = self._equity(prices, metrics)
         reason_counts: dict[str, int] = {}
         for t in trades:
             reason_counts[t["reason"]] = reason_counts.get(t["reason"], 0) + 1
-        state.update("sim", {
-            "updated": now,
-            "enabled": True,
+        return {
+            "key": self.key,
+            "name": self.name,
             "start_balance": self.data["start_balance"],
             "balance": round(self.data["balance"], 2),
-            "equity": round(equity, 2),
+            "equity": round(self._equity(prices, metrics), 2),
             "fees_paid": round(self.data["fees_paid"], 2),
-            "leverage": LEVERAGE,
-            "fee_pct": FEE_PCT,
-            "slippage_pct": SLIPPAGE_PCT,
-            "max_positions": MAX_POSITIONS,
             "positions": open_view,
             "trades_total": len(trades),
             "wins": len(wins),
@@ -329,25 +355,50 @@ class Simulator:
             "avg_loss": round(sum(t["pnl"] for t in losses) / len(losses), 2) if losses else None,
             "avg_held_hours": round(sum(t["held_hours"] for t in trades) / len(trades), 1) if trades else None,
             "reason_counts": reason_counts,
-            "recent_trades": trades[-30:][::-1],
+            "recent_trades": trades[-20:][::-1],
             "equity_samples": self.data["equity_samples"][-200:],
             "since": self.data["created"],
-        })
+        }
+
+
+def make_simulators() -> list[Simulator]:
+    return [
+        Simulator(v["key"], v["name"], v.get("stop_mode", "none"), v.get("stop_pct", 0.0))
+        for v in VARIANTS
+    ]
+
+
+def publish(views: list[dict], now: float) -> None:
+    state.update("sim", {
+        "updated": now,
+        "enabled": True,
+        "leverage": LEVERAGE,
+        "fee_pct": FEE_PCT,
+        "slippage_pct": SLIPPAGE_PCT,
+        "max_positions": MAX_POSITIONS,
+        "variants": views,
+    })
 
 
 def main() -> None:
     if not SIM_ENABLED:
         log("Simülasyon kapalı (SIM_ENABLED=0).")
         return
-    sim = Simulator()
-    sim.load()
-    log(f"Simülasyon başladı: {sim.data['balance']:.2f}$ · {LEVERAGE:g}x · "
-        f"{MAX_POSITIONS} slot · komisyon %{FEE_PCT:g}/taraf · kayma %{SLIPPAGE_PCT:g} · "
-        f"durum: {STATE_FILE}")
+    sims = make_simulators()
+    for sim in sims:
+        sim.load()
+    log(f"Simülasyon başladı ({len(sims)} strateji: "
+        f"{', '.join(s.name for s in sims)}) · her biri {START_BALANCE:g}$ · "
+        f"{LEVERAGE:g}x · {MAX_POSITIONS} slot · komisyon %{FEE_PCT:g}/taraf · "
+        f"kayma %{SLIPPAGE_PCT:g} · durum: {STATE_DIR}")
     while True:
         try:
             snapshot = state.snapshot()
-            sim.tick(snapshot.get("ranges") or {}, snapshot.get("funding") or {})
+            ranges = snapshot.get("ranges") or {}
+            funding = snapshot.get("funding") or {}
+            now = time.time()
+            views = [sim.tick(ranges, funding, now) for sim in sims]
+            publish(views, now)
         except Exception:
             log(f"Tick hatası:\n{traceback.format_exc()}")
         time.sleep(TICK_SECONDS)

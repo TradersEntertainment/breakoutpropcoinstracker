@@ -143,29 +143,37 @@ Altında range kartları (eğimli kanal + sparkline + "şu an alt/üst bantta"
 rozetleri), tüm coinlerin skor tablosu (elenme sebepleriyle) ve funding
 tablosu (HL oranı ve aksiyon kolonuyla) var.
 
-## 4) Simülatör — kağıt üzerinde range ticareti
+## 4) Simülatör — iki strateji yarışıyor (kağıt üzerinde)
 
-Dashboard'ın önerdiği range işlemlerini gerçek zamanlı fiyatla otomatik
-"uygular" ve sonuçları dashboard'daki **🧪 Simülasyon** bölümünde gösterir.
-Amaç: birkaç gün veri biriktirip stratejinin gerçekte ne yaptığını görmek.
+Dashboard'ın önerdiği range işlemlerini gerçek zamanlı fiyatla **iki ayrı
+stratejiyle** otomatik uygular; her strateji kendi 10.000$'lık hesabıyla,
+birebir aynı girişlerle yarışır. Amaç: birkaç gün veri biriktirip stop
+kullanmanın işe yarayıp yaramadığını görmek.
 
-Kurallar:
-- **Giriş:** range'deki coin bandın kenarına gelince (alt → LONG, üst → SHORT),
-  beklenen kâr `RANGE_MIN_PROFIT`'in üstündeyse. Hesap 5 eşit slota bölünür:
-  slot marjini = bakiye/5, notional = marjin × 10x.
-- **Çıkış:** karşı banda varınca (**hedef**), bant %25'ten fazla kırılınca
-  (**stop**), skor düşünce (**yapı bozuldu**), beklenen tur süresinin 3 katı
-  geçince (**zaman aşımı**), zarar marjini yerse (**likidasyon**).
-- **Maliyetler:** her iki yönde taker komisyonu (%0.045/taraf) + kayma (%0.02).
-- Kapanan her işlemde giriş anındaki **skor, genişlik, dokunuş, beklenen tur
-  süresi ve beklenen kâr** da kaydedilir → `/api/sim` tüm ham veriyi döker;
-  "hangi skorlar/genişlikler para kazandırıyor" analizini bununla yaparız.
+| | **Stopsuz** | **%1 kırılma stopu** |
+|---|---|---|
+| Giriş | bandın kenarında (alt → LONG, üst → SHORT) | aynı |
+| Hedef | karşı bant | aynı |
+| Stop | yok — hedefe dönmesini bekler | fiyat bandı aleyhte %1 aşarsa keser (SHORT: üst bant ×1.01, LONG: alt bant ×0.99) |
+| Zaman aşımı | beklenen tur × 3 | aynı |
+| Likidasyon | zarar marjini yerse (kayıp = marjin) | aynı |
 
-⚠️ **Kalıcılık:** durum `sim_state.json`'a yazılır. Railway'de her deploy
-konteyneri sıfırladığı için veri kaybolmasın istiyorsan servise bir
-**Volume** bağla (Service → Settings → Volumes → mount path `/data`) ve
-`SIM_STATE_FILE=/data/sim_state.json` değişkenini ekle. Volume yoksa
-simülasyon her deploy'da 10.000$'dan yeniden başlar (çalışmaya devam eder).
+Ortak kurallar: hesap 5 eşit slot, slot marjini × 10x notional, beklenen kâr
+`RANGE_MIN_PROFIT` üstünde olmalı, her iki yönde taker komisyonu
+(%0.045/taraf) + kayma (%0.02), kapanan coine 30 dk tekrar giriş yasağı.
+İki strateji arasındaki **tek fark stop kuralı** — karşılaştırma temiz.
+
+Kapanan her işlemde giriş anındaki **skor, genişlik, dokunuş, beklenen tur
+süresi ve beklenen kâr** da kaydedilir → `/api/sim` iki stratejinin tüm ham
+verisini döker; "stop mu iyi, hangi skorlar para kazandırıyor" analizini
+bununla yaparız.
+
+⚠️ **Kalıcılık:** Railway her deploy'da konteyneri sıfırlar. Veri kaybolmasın
+diye servise bir **Volume** bağla (Service → Settings → Volumes → mount path
+`/data`) — başka bir şey gerekmez, `/data` yazılabilirse otomatik algılanır
+ve durum `/data/sim_state_<strateji>.json` dosyalarına yazılır (loglarda
+"durum: …" satırında görünür). Farklı bir klasör istersen `SIM_STATE_FILE`
+ile ezebilirsin. Volume yoksa simülasyon her deploy'da sıfırdan başlar.
 
 Simülatör ayarları:
 
@@ -179,7 +187,8 @@ Simülatör ayarları:
 | `SIM_SLIPPAGE_PCT` | `0.02` | Taraf başına kayma (%). |
 | `SIM_COOLDOWN_MINUTES` | `30` | Kapanan coine tekrar giriş bekleme süresi. |
 | `SIM_TIME_STOP_MULT` | `3` | Beklenen tur × N sonra çık (0 = kapalı). |
-| `SIM_STATE_FILE` | `sim_state.json` | Durum dosyası yolu (Volume için değiştir). |
+| `SIM_STOP_BREAK_PCT` | `1.0` | 2. stratejinin stop mesafesi (bandın %'si olarak fiyat). |
+| `SIM_STATE_FILE` | otomatik | Durum klasörünü değiştirmek için (normalde gerekmez). |
 
 ## Kurulum
 

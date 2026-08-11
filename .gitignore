@@ -2,5 +2,5 @@ __pycache__/
 *.pyc
 .env
 .venv/
-sim_state.json
-sim_state.tmp
+sim_state*.json
+sim_state*.tmp
