@@ -217,23 +217,30 @@ function fundingActions(fd, now) {
   }
   return out.sort((a,b) => b.sort - a.sort);
 }
-function rangeActions(rg) {
-  const zone = rg.edge_zone ?? 0.15, out = [];
+function swingTxt(h) { return h ? "~" + (h < 10 ? h.toFixed(1) : Math.round(h)) + "sa" : null; }
+
+function rangeActions(rg, size) {
+  const zone = rg.edge_zone ?? 0.15, minPot = rg.min_profit ?? 0;
+  const ov = rg.break_overshoot ?? 0.25, out = [];
   for (const m of rg.coins || []) {
     if (!m.ranging) continue;
-    if (m.position <= zone) {
-      out.push({ kind: "range", coin: m.coin, side: "LONG", m,
-                 target: m.band_high, pot: (m.band_high - m.last) / m.last * 100,
-                 sort: zone - m.position });
-    } else if (m.position >= 1 - zone) {
-      out.push({ kind: "range", coin: m.coin, side: "SHORT", m,
-                 target: m.band_low, pot: (m.last - m.band_low) / m.last * 100,
-                 sort: m.position - (1 - zone) });
+    let a = null;
+    // Bandı taşma payından (ov) fazla aşan fiyat range işlemi değildir — elenir
+    if (m.position >= -ov && m.position <= zone) {
+      a = { kind: "range", coin: m.coin, side: "LONG", m, size,
+            target: m.band_high, pot: (m.band_high - m.last) / m.last * 100,
+            sort: zone - m.position };
+    } else if (m.position >= 1 - zone && m.position <= 1 + ov) {
+      a = { kind: "range", coin: m.coin, side: "SHORT", m, size,
+            target: m.band_low, pot: (m.last - m.band_low) / m.last * 100,
+            sort: m.position - (1 - zone) };
     }
+    if (a && a.pot >= minPot) out.push(a);   // minimum kâr filtresi
   }
-  return out.sort((a,b) => b.sort - a.sort);
+  return out.sort((a,b) => b.pot - a.pot);
 }
-function actionCard(a) {
+function actionCard(a, meta) {
+  const chart = a.m ? sparkSVG(a.m, meta) : "";
   if (a.kind === "funding") {
     const hurry = a.mins !== null && a.mins <= 60;
     const est = a.spread === null ? null : a.spread / 100 * a.size;
@@ -251,21 +258,26 @@ function actionCard(a) {
           `⏳ Binance ödemesine <b>${dur(a.mins)}</b> (${ts(a.next)})`}
           ${hurry ? '<span class="hurrytag">— ödemeden önce gir</span>' : ""}</span>
       </div>
+      ${chart}
       <div class="why">HL'de ${a.side} · hedge: ${a.hedge} · ödeme sonrası çıkılabilir</div>
     </div>`;
   }
   const m = a.m;
+  const est = a.pot / 100 * a.size;
+  const swing = swingTxt(m.swing_hours);
   return `<div class="card act">
     <div class="top">${badge(a.side)}<span class="coin">${esc(a.coin)}</span>
       <span class="src">range ${a.side === "LONG" ? "alt" : "üst"} bandı</span></div>
     <div class="rows">
-      <span>Fiyat <b>${fmtPrice(m.last)}</b> · konum <b>%${(m.position*100).toFixed(0)}</b>
-        · skor ${m.score.toFixed(0)}</span>
-      <span>Hedef ${a.side === "LONG" ? "üst" : "alt"} bant <b>${fmtPrice(a.target)}</b>
-        (${a.pot >= 0 ? "+" : ""}%${a.pot.toFixed(1)})</span>
-      <span>Bant ${fmtPrice(m.band_low)} – ${fmtPrice(m.band_high)}
-        · genişlik %${m.width_pct.toFixed(1)}</span>
+      <span>Hedefe varırsa: <b>+%${a.pot.toFixed(1)}</b>
+        · ${a.size.toLocaleString("tr-TR")}$ ile ≈ <b>${fmtUsd(est)}</b>${
+        swing ? ` · beklenen <b>${swing}</b>` : ""}</span>
+      <span>Fiyat <b>${fmtPrice(m.last)}</b> → hedef ${a.side === "LONG" ? "üst" : "alt"}
+        bant <b>${fmtPrice(a.target)}</b></span>
+      <span>Konum %${(m.position*100).toFixed(0)} · skor ${m.score.toFixed(0)}
+        · bant ${fmtPrice(m.band_low)} – ${fmtPrice(m.band_high)}</span>
     </div>
+    ${chart}
     <div class="why">Gitgel: ${a.side === "LONG" ? "alt banttan al, üst banda sat"
       : "üst banttan sat, alt banttan geri al"} · bant dışına taşarsa iptal</div>
   </div>`;
@@ -367,8 +379,12 @@ function render(data) {
     "range: " + ago(rg.updated, now) + " · funding: " + ago(fd.updated, now);
 
   /* Aksiyonlar */
+  const size = fd.position_size || rg.position_size || 10000;
+  const rgMap = {};
+  for (const m of coins) rgMap[m.coin] = m;
   const fActs = fundingActions(fd, now);
-  const rActs = rangeActions(rg);
+  fActs.forEach(a => { a.m = rgMap[a.coin]; });   // grafik için kline verisi
+  const rActs = rangeActions(rg, size);
   const acts = [...fActs, ...rActs];
   const longs = acts.filter(a => a.side === "LONG").length;
   const shorts = acts.length - longs;
@@ -396,7 +412,11 @@ function render(data) {
       '%) veya range kenarı (%' + (zone*100).toFixed(0) + ') bekleniyor.' +
       ' Yaklaşanlar aşağıda.</div>';
   } else {
-    $("actions").innerHTML = acts.map(actionCard).join("");
+    $("actions").innerHTML = acts.map(a => actionCard(a, meta)).join("");
+    const actMs = acts.filter(a => a.m).map(a => a.m);
+    document.querySelectorAll("#actions svg[data-spark]").forEach((svg, i) => {
+      bindSpark(svg, actMs[i], meta);
+    });
   }
 
   const watch = watchRows(fd, rg, now);
@@ -415,17 +435,35 @@ function render(data) {
       "Şu an kriterlere uyan range yok — bulununca burada görünür." :
       "İlk tarama bekleniyor…"}</div>`;
   } else {
+    const ov = rg.break_overshoot ?? 0.25;
     $("cards").innerHTML = ranging.map(m => {
       const posPct = Math.max(-20, Math.min(120, m.position * 100));
-      const inLow = m.position <= zone, inHigh = m.position >= 1 - zone;
-      const planNow = inLow ? badge("LONG") + " <b>şu an alt bantta</b>"
-                    : inHigh ? badge("SHORT") + " <b>şu an üst bantta</b>"
-                    : badge("BEKLE") + " kenar bekleniyor (konum %" + (m.position*100).toFixed(0) + ")";
+      const outUp = m.position > 1 + ov, outDown = m.position < -ov;
+      const inLow = !outDown && m.position <= zone;
+      const inHigh = !outUp && m.position >= 1 - zone;
+      const toTop = (m.band_high - m.last) / m.last * 100;
+      const toBottom = (m.last - m.band_low) / m.last * 100;
+      const tour = m.potential_pct ?? m.width_pct * (1 - zone);
+      const swing = swingTxt(m.swing_hours);
+      const planNow = outUp
+        ? badge("BEKLE") + ' ⚠️ <b>bandın üstüne taştı</b> — kırılma riski, aksiyon yok'
+        : outDown
+        ? badge("BEKLE") + ' ⚠️ <b>bandın altına taştı</b> — kırılma riski, aksiyon yok'
+        : inLow
+        ? badge("LONG") + ` <b>şu an alt bantta</b> → tepeye <b>+%${toTop.toFixed(1)}</b>` +
+          ` ≈ ${fmtUsd(toTop/100*size)}${swing ? ` · ${swing}` : ""}`
+        : inHigh
+        ? badge("SHORT") + ` <b>şu an üst bantta</b> → dibe <b>+%${toBottom.toFixed(1)}</b>` +
+          ` ≈ ${fmtUsd(toBottom/100*size)}${swing ? ` · ${swing}` : ""}`
+        : badge("BEKLE") + ` kenar bekleniyor (konum %${(m.position*100).toFixed(0)})` +
+          ` · kenardan tur ≈ <b>+%${tour.toFixed(1)}</b>`;
       return `<div class="card">
         <div class="top"><span class="coin">${esc(m.coin)}</span>
           <span class="sym">${esc(m.symbol)}</span>
           <span class="chip on">✓ RANGE ${m.score.toFixed(0)}</span></div>
         <div class="meta">
+          <span>tur kârı <b>+%${tour.toFixed(1)}</b></span>
+          <span>tur süresi <b>${swing || "–"}</b></span>
           <span>genişlik <b>%${m.width_pct.toFixed(1)}</b></span>
           <span><b>${m.touches}</b> dokunuş</span>
           <span>${driftTxt(m.drift_day_pct)}</span>
@@ -447,20 +485,22 @@ function render(data) {
 
   /* Skor tablosu */
   $("rangetable").innerHTML =
-    "<tr><th>Coin</th><th>Skor</th><th>Genişlik</th><th>Dokunuş</th>" +
-    "<th>Eğim</th><th>Konum</th><th>Durum</th></tr>" +
+    "<tr><th>Coin</th><th>Skor</th><th>Tur kârı</th><th>Tur süresi</th><th>Genişlik</th>" +
+    "<th>Dokunuş</th><th>Eğim</th><th>Konum</th><th>Durum</th></tr>" +
     (coins.length ? coins.map(m => `<tr>
       <td class="coin">${esc(m.coin)}</td>
       <td><span class="bar"><i style="width:${Math.min(100, m.score)}%"></i>` +
         `<span class="tick" style="left:${rg.score_enter ?? 60}%"></span></span> ` +
         `${m.score.toFixed(0)}</td>
+      <td>+%${(m.potential_pct ?? m.width_pct * (1 - zone)).toFixed(1)}</td>
+      <td>${swingTxt(m.swing_hours) || "–"}</td>
       <td>%${m.width_pct.toFixed(1)}</td>
       <td>${m.touches}</td>
       <td>${(m.drift_day_pct > 0 ? "+" : "") + m.drift_day_pct.toFixed(1)}%/g</td>
       <td>%${(m.position*100).toFixed(0)}</td>
       <td>${m.ranging ? '<span class="chip on">✓ RANGE</span>'
                       : '<span class="why">' + esc((m.reasons||[]).join(", ") || "skor düşük") + "</span>"}</td>
-    </tr>`).join("") : '<tr><td colspan="7" class="empty">İlk tarama bekleniyor…</td></tr>');
+    </tr>`).join("") : '<tr><td colspan="9" class="empty">İlk tarama bekleniyor…</td></tr>');
 
   /* Funding tablosu */
   const th = fd.threshold ?? 0.7;
@@ -490,7 +530,10 @@ function render(data) {
     ((fd.unmatched || []).length ? "Binance'te eşleşmeyen: " + esc(fd.unmatched.join(", ")) + "<br>" : "") +
     "Funding aksiyonu HL bacağıdır (funding negatif → HL SHORT + Binance LONG; pozitif → tersi). " +
     "Range: %0 alt bant (LONG bölgesi), %100 üst bant (SHORT bölgesi), kenar bölgesi %" +
-    ((zone)*100).toFixed(0) + ". Skor çubuğundaki çizgi giriş eşiği (" + (rg.score_enter ?? 60) + "), " +
+    ((zone)*100).toFixed(0) + ", minimum tur kârı %" + (rg.min_profit ?? "-") +
+    " (altında kalan range sayılmaz). Kâr tahminleri " + size.toLocaleString("tr-TR") +
+    "$ pozisyon içindir, kaldıraç ve komisyon hariçtir. " +
+    "Skor çubuğundaki çizgi giriş eşiği (" + (rg.score_enter ?? 60) + "), " +
     "funding çubuğundaki çizgi alarm eşiği (±" + th + "%). Saatler UTC+" + TZ +
     ". Sayfa 60 sn'de bir yenilenir. Bilgi amaçlıdır, emir vermez.";
 }

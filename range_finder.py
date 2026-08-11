@@ -45,6 +45,9 @@ SCAN_MINUTES = _env_num("RANGE_SCAN_MINUTES", 15)
 
 MIN_WIDTH = _env_num("RANGE_MIN_WIDTH", 2.0)      # % — bundan dar bant ilgisiz
 MAX_WIDTH = _env_num("RANGE_MAX_WIDTH", 20.0)     # % — bundan geniş "range" değil kaos
+# Kenardan karşı banda beklenen fiyat hareketi (%). Tur kârı bunun altında
+# kalan range'ler hiç "range" sayılmaz — işlem maliyetine değmez.
+MIN_PROFIT = _env_num("RANGE_MIN_PROFIT", 2.5)
 MIN_TOUCHES = int(_env_num("RANGE_MIN_TOUCHES", 4))
 MAX_DRIFT = _env_num("RANGE_MAX_DRIFT", 1.5)      # trendin bant yüksekliğine oranı
 SCORE_ENTER = _env_num("RANGE_SCORE_ENTER", 60)
@@ -130,7 +133,8 @@ def analyze_series(closes: list[float]) -> dict | None:
     # Dönüşümlü bant dokunuşları: üst %25 ↔ alt %25 bölgeleri
     touches = 0
     last_side = None
-    for r in resid:
+    touch_bars: list[int] = []
+    for i, r in enumerate(resid):
         pos = (r - p5) / height
         if pos >= 0.75:
             side = "H"
@@ -141,6 +145,13 @@ def analyze_series(closes: list[float]) -> dict | None:
         if side != last_side:
             touches += 1
             last_side = side
+            touch_bars.append(i)
+
+    # Beklenen tur süresi: ardışık zıt dokunuşlar arası ortalama süre
+    gaps = [b - a for a, b in zip(touch_bars, touch_bars[1:])]
+    swing_hours = (
+        round(sum(gaps) / len(gaps) * interval_minutes() / 60, 1) if gaps else None
+    )
 
     drift_total = slope * (n - 1)
     drift_ratio = abs(drift_total) / height
@@ -156,12 +167,17 @@ def analyze_series(closes: list[float]) -> dict | None:
     band_high = trend_last + p95
     position = clamp((last - band_low) / height, -0.5, 1.5)
 
+    # Kenar bölgesinden (EDGE_ZONE) girip karşı banda çıkınca beklenen hareket
+    potential_pct = width_pct * (1 - EDGE_ZONE)
+
     # Elemeler: biri düşerse skor 0 ve sebep yazılır
     reasons = []
     if width_pct < MIN_WIDTH:
         reasons.append("dar bant")
     if width_pct > MAX_WIDTH:
         reasons.append("aşırı geniş")
+    if potential_pct < MIN_PROFIT:
+        reasons.append(f"tur kârı < %{MIN_PROFIT:g}")
     if touches < MIN_TOUCHES:
         reasons.append("az dokunuş")
     if drift_ratio > MAX_DRIFT:
@@ -197,6 +213,8 @@ def analyze_series(closes: list[float]) -> dict | None:
         "drift_ratio": round(drift_ratio, 2),
         "drift_day_pct": round(drift_day_pct, 2),
         "efficiency": round(efficiency, 3),
+        "potential_pct": round(potential_pct, 2),
+        "swing_hours": swing_hours,
         "band_low": band_low,
         "band_high": band_high,
         # Kanalın pencere başındaki seviyeleri — dashboard eğimli bandı bunlarla çizer
@@ -239,6 +257,10 @@ def sweep(mapping: dict[str, str]) -> dict[str, dict]:
 # ── Bildirim kararları ───────────────────────────────────────────────
 
 
+def swing_label(swing_hours) -> str:
+    return f"~{swing_hours:g}sa" if swing_hours else "-"
+
+
 def drift_label(drift_day_pct: float) -> str:
     if drift_day_pct <= -0.3:
         return f"↘️ alçalan kanal: {drift_day_pct:+.1f}%/gün"
@@ -255,6 +277,7 @@ def new_range_block(m: dict) -> str:
         f" · bant {fmt_price(m['band_low'])} – {fmt_price(m['band_high'])}"
         f" · konum %{m['position'] * 100:.0f}",
         drift_label(m["drift_day_pct"])
+        + f" · tur {swing_label(m.get('swing_hours'))}"
         + f" · pencere {LOOKBACK_HOURS:g}sa/{RANGE_INTERVAL}",
     ])
 
@@ -262,9 +285,19 @@ def new_range_block(m: dict) -> str:
 def edge_block(m: dict, side: str) -> str:
     side_txt = "ALT bant" if side == "low" else "ÜST bant"
     icon = "🟢" if side == "low" else "🔴"
+    if side == "low":
+        target = m["band_high"]
+        pot = (target - m["last"]) / m["last"] * 100
+        move = "LONG → hedef üst bant"
+    else:
+        target = m["band_low"]
+        pot = (m["last"] - target) / m["last"] * 100
+        move = "SHORT → hedef alt bant"
     return "\n".join([
         f"🎯 <b>{m['coin']}</b> {side_txt} bölgesinde {icon}"
         f" · {fmt_price(m['last'])} · konum %{m['position'] * 100:.0f}",
+        f"{move} {fmt_price(target)} (<b>{pot:+.1f}%</b>)"
+        f" · beklenen süre {swing_label(m.get('swing_hours'))}",
         f"Bant {fmt_price(m['band_low'])} – {fmt_price(m['band_high'])}"
         f" · skor {m['score']:.0f} · genişlik %{m['width_pct']:.1f}",
     ])
@@ -295,7 +328,10 @@ def evaluate(
 
     for coin, m in sorted(results.items(), key=lambda kv: kv[1]["score"], reverse=True):
         if coin not in ranging:
-            if m["score"] >= SCORE_ENTER:
+            # Girişte fiyat bant içinde (küçük taşma payıyla) olmalı — geçmişi
+            # range gibi görünüp bandı çoktan kırmış coin "range" sayılmaz
+            in_band = -BREAK_OVERSHOOT <= m["position"] <= 1 + BREAK_OVERSHOOT
+            if m["score"] >= SCORE_ENTER and in_band:
                 ranging.add(coin)
                 new_blocks.append(new_range_block(m))
                 # Aynı taramada ayrıca bant uyarısı atma; konum mesajda zaten var
@@ -348,6 +384,9 @@ def publish_range_state(results: dict[str, dict], tracker: dict, sweep_seconds: 
         "score_enter": SCORE_ENTER,
         "score_exit": SCORE_EXIT,
         "edge_zone": EDGE_ZONE,
+        "break_overshoot": BREAK_OVERSHOOT,
+        "min_profit": MIN_PROFIT,
+        "position_size": bot.POSITION_SIZE,
         "ranging_count": len(ranging),
         "coins": coins,
     })
@@ -359,7 +398,7 @@ def startup_message(mapping_size: int) -> str:
         f"{mapping_size} coin taranacak · pencere {LOOKBACK_HOURS:g}sa/{RANGE_INTERVAL}"
         f" · tarama sıklığı {SCAN_MINUTES:g} dk",
         f"Kriter: ≥{MIN_TOUCHES} bant dokunuşu · genişlik %{MIN_WIDTH:g}–%{MAX_WIDTH:g}"
-        f" · skor ≥{SCORE_ENTER:g} girer, <{SCORE_EXIT:g} çıkar",
+        f" · tur kârı ≥ %{MIN_PROFIT:g} · skor ≥{SCORE_ENTER:g} girer, <{SCORE_EXIT:g} çıkar",
         "Eğimli (alçalan/yükselen) kanallar da dahildir.",
     ]
     if EDGE_ALERTS:

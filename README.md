@@ -96,6 +96,7 @@ uydurur (eğimli kanal), trendden arındırılmış seride bandı (p5–p95) ç�
 |---|---|
 | Bant dokunuşu (alt ↔ üst dönüşümlü) | ≥ 4 |
 | Bant genişliği | %2 – %20 |
+| Tur kârı (kenardan karşı banda hareket) | ≥ %2.5 |
 | Trendin banda oranı | ≤ 1.5× (eğimli kanal serbest, düz trend elenir) |
 | Skor (dokunuş + genişlik + eğim + verimlilik) | ≥ 60 girer, < 45 çıkar |
 
@@ -107,6 +108,14 @@ Sinyal türleri (dashboard'da; `RANGE_ALERTS=1` ise Telegram'a da):
 
 Konum: **%0 = alt bant, %100 = üst bant.** Skor histerezislidir (60 girer,
 45'te çıkar) — sınırda titreyip spam yapmaz. Tarama 15 dk'da bir.
+
+Ek kurallar:
+- **Bant dışı taşma:** fiyat bandı yükseklik cinsinden %25'ten fazla aşmışsa
+  (konum < -%25 veya > %125) o coin range'e alınmaz / aksiyon önerilmez —
+  o artık kırılma adayıdır. Range'deyken taşarsa "💥 kırıldı" sayılır.
+- **Beklenen tur süresi:** ardışık alt↔üst bant dokunuşları arasındaki
+  ortalama süreden hesaplanır — "girersen hedefe yaklaşık kaç saatte varır"
+  tahminidir; kartlarda ve tabloda `tur süresi ~Xsa` olarak görünür.
 
 ## 3) Dashboard — "ne yapmalı" ekranı
 
@@ -121,7 +130,10 @@ yapacağını doğrudan söyler:
   + Binance SHORT hedge), fark, tahmini kazanç ve Binance ödemesine kalan
   süre ("ödemeden önce gir" uyarısıyla).
 - **Range kartı**: range'deki coin bandın kenarına gelince — alt bantta
-  **LONG** (hedef üst bant, + beklenen %), üst bantta **SHORT** (hedef alt bant).
+  **LONG**, üst bantta **SHORT**; "hedefe varırsa +%X ≈ +Y$" kâr tahmini,
+  beklenen tur süresi ve son 24 saatin grafiğiyle (eğimli kanal + fiyat).
+  Tur kârı `RANGE_MIN_PROFIT`'in altında kalanlar ve bandı aşmış (kırılma
+  adayı) coinler gösterilmez. Funding kartlarında da aynı grafik vardır.
 - **📡 Yaklaşanlar**: henüz tetiklenmemiş adaylar — eşiğe yaklaşan funding'ler
   ve banda yaklaşan range coinleri, ne kadar kaldığıyla.
 
@@ -180,6 +192,7 @@ Range finder'a özel:
 | `RANGE_SCAN_MINUTES` | `15` | Tarama sıklığı. |
 | `RANGE_MIN_WIDTH` / `RANGE_MAX_WIDTH` | `2` / `20` | Bant genişliği sınırları (%). |
 | `RANGE_MIN_TOUCHES` | `4` | En az dönüşümlü bant dokunuşu. |
+| `RANGE_MIN_PROFIT` | `2.5` | Minimum tur kârı (%); altında kalan range sayılmaz. |
 | `RANGE_MAX_DRIFT` | `1.5` | Trendin bant yüksekliğine oranı üst sınırı. |
 | `RANGE_SCORE_ENTER` / `RANGE_SCORE_EXIT` | `60` / `45` | Giriş/çıkış skoru (histerezis). |
 | `EDGE_ALERTS` | `1` | Alt/üst bant uyarıları (`0` = kapat). |
