@@ -13,12 +13,15 @@ RUN_ONCE=1 ile tek tarama yapıp çıkar (test için).
 
 import json
 import os
+import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+
+import state
 
 # ── Ayarlar (hepsi env ile değiştirilebilir) ─────────────────────────
 
@@ -79,8 +82,17 @@ ASSETS_FILE = Path(__file__).with_name("assets.json")
 TELEGRAM_CHUNK = 3800  # Telegram tek mesaj limiti 4096
 SEPARATOR = "\n\n➖➖➖➖➖➖➖➖\n\n"
 
-session = requests.Session()
-session.headers.update({"User-Agent": "breakout-prop-funding-bot/1.0"})
+# requests.Session'ı thread'ler arasında paylaşmamak için thread başına bir tane
+_thread_local = threading.local()
+
+
+def _session() -> requests.Session:
+    sess = getattr(_thread_local, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        sess.headers.update({"User-Agent": "breakout-prop-funding-bot/1.0"})
+        _thread_local.session = sess
+    return sess
 
 
 def log(message: str) -> None:
@@ -96,9 +108,9 @@ def _request_json(method: str, url: str, *, payload=None, retries: int = 3):
     for attempt in range(1, retries + 1):
         try:
             if method == "GET":
-                resp = session.get(url, timeout=25)
+                resp = _session().get(url, timeout=25)
             else:
-                resp = session.post(url, json=payload, timeout=25)
+                resp = _session().post(url, json=payload, timeout=25)
             if resp.status_code in (418, 429):
                 wait = int(resp.headers.get("Retry-After", "0") or 0) or 10 * attempt
                 log(f"Rate limit ({resp.status_code}) {url} → {wait}s bekleniyor")
@@ -248,21 +260,22 @@ def chunk_message(text: str) -> list[str]:
     return chunks
 
 
-def send_telegram(text: str) -> None:
-    if not TELEGRAM_TOKEN or not CHAT_ID:
+def send_telegram(text: str, chat_id: str | None = None) -> None:
+    chat = chat_id or CHAT_ID
+    if not TELEGRAM_TOKEN or not chat:
         log(f"[DRY-RUN] Telegram ayarlı değil, gidecek mesaj:\n{text}")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     for chunk in chunk_message(text):
         payload = {
-            "chat_id": CHAT_ID,
+            "chat_id": chat,
             "text": chunk,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
         for attempt in range(1, 4):
             try:
-                resp = session.post(url, json=payload, timeout=25)
+                resp = _session().post(url, json=payload, timeout=25)
                 if resp.status_code == 429:
                     wait = resp.json().get("parameters", {}).get("retry_after", 5)
                     time.sleep(wait + 1)
@@ -482,6 +495,36 @@ def heartbeat_message(
 # ── Ana döngü ────────────────────────────────────────────────────────
 
 
+def publish_funding_state(
+    mapping: dict[str, str],
+    intervals: dict[str, float],
+    premium: dict[str, dict],
+    unmatched: list[str],
+) -> None:
+    """Dashboard için güncel funding görünümünü paylaşır."""
+    coins = []
+    for hl_name, symbol in mapping.items():
+        data = premium.get(symbol)
+        if not data:
+            continue
+        coins.append({
+            "coin": hl_name,
+            "symbol": symbol,
+            "rate_pct": round(safe_float(data.get("lastFundingRate")) * 100, 4),
+            "interval_h": intervals.get(symbol, 8.0),
+            "next_funding": safe_float(data.get("nextFundingTime")) / 1000,
+            "mark_price": safe_float(data.get("markPrice")),
+        })
+    coins.sort(key=lambda c: abs(c["rate_pct"]), reverse=True)
+    state.update("funding", {
+        "updated": time.time(),
+        "threshold": FUNDING_THRESHOLD,
+        "matched": len(mapping),
+        "unmatched": unmatched,
+        "coins": coins,
+    })
+
+
 def scan(
     mapping: dict[str, str],
     intervals: dict[str, float],
@@ -607,6 +650,7 @@ def main() -> None:
                 next_mapping_refresh = cycle_start + MAPPING_REFRESH_HOURS * 3600
 
             blocks, premium = scan(mapping, intervals, last_alerts, reminded)
+            publish_funding_state(mapping, intervals, premium, unmatched)
             if blocks:
                 # Başlık yok — her blok kendi başına okunur
                 send_telegram(SEPARATOR.join(blocks))

@@ -1,9 +1,19 @@
-# Breakout Prop × Binance Funding Alarm Botu
+# Breakout Prop Tracker
 
-Breakout Prop'ta (Hyperliquid) listeli coinleri Binance Futures (USDT-M perpetual)
-ile eşler ve **Binance funding oranı mutlak değerce %0.7'yi geçtiğinde**
-Telegram'a bildirim atar. Mantık: %1 hedef, 0.3 tolerans → alt sınır ±%0.7,
-üst sınır yok (yani +0.9, -0.75, -2, -4 hepsi bildirim üretir; +0.5 üretmez).
+Breakout Prop'ta (Hyperliquid) listeli coinler için üç parça, tek Railway servisi:
+
+1. **Funding alarmı** → `CHAT_ID` kanalına: Binance funding'i mutlak değerce
+   %0.7'yi geçen coinler (aşağıda).
+2. **Range finder** → `RANGE_CHAT_ID` kanalına: bir kanal içinde gitgel yapan
+   (alçalarak/yükselerek de olsa) coinler.
+3. **Dashboard** → web sayfası: iki tarafın canlı durumu, sparkline'larla.
+
+## 1) Funding alarmı
+
+Binance Futures (USDT-M perpetual) funding oranı **mutlak değerce %0.7'yi
+geçtiğinde** Telegram'a bildirim atar. Mantık: %1 hedef, 0.3 tolerans → alt
+sınır ±%0.7, üst sınır yok (yani +0.9, -0.75, -2, -4 hepsi bildirim üretir;
++0.5 üretmez).
 
 Mesajda karşılaştırma için Hyperliquid'in **saatlik** funding'i de gösterilir —
 HL'de funding saat başı ödendiği için genelde çok daha küçüktür; fark arb fırsatıdır:
@@ -70,6 +80,39 @@ Saatler TR saatidir (`TZ_OFFSET_HOURS`).
 5. Eşleşme listesi 6 saatte bir yenilenir (Binance'e yeni listelenen coinler
    otomatik dahil olur), günde bir "bot çalışıyor" özeti atar.
 
+## 2) Range finder
+
+Aynı coin listesini kullanır; **ayrı bir Telegram kanalına** (`RANGE_CHAT_ID`)
+bildirir. Aranan form: sürekli alçalarak/yükselerek de olsa **bir bant içinde
+gitgel yapan** fiyat (ör. KAITO'nun 0.66–0.72 arasında defalarca gidip gelmesi).
+
+Nasıl bulur: son 24 saatin 15 dakikalık kapanışlarına doğrusal bir trend
+uydurur (eğimli kanal), trendden arındırılmış seride bandı (p5–p95) çıkarır ve
+şunları ölçer:
+
+| Metrik | Kriter (varsayılan) |
+|---|---|
+| Bant dokunuşu (alt ↔ üst dönüşümlü) | ≥ 4 |
+| Bant genişliği | %2 – %20 |
+| Trendin banda oranı | ≤ 1.5× (eğimli kanal serbest, düz trend elenir) |
+| Skor (dokunuş + genişlik + eğim + verimlilik) | ≥ 60 girer, < 45 çıkar |
+
+Bildirimler:
+- **📦 Range'e girdi** — skor, genişlik, dokunuş, bant seviyeleri, konum, eğim.
+- **🎯 Alt/üst bant** — range'deki coin bandın %15'lik kenarına gelince
+  (90 dk arayla; gitgel al-satı için giriş zamanlaması).
+- **💥 Range kırıldı** — fiyat bandın dışına taştı ya da yapı bozuldu.
+
+Konum: **%0 = alt bant, %100 = üst bant.** Skor histerezislidir (60 girer,
+45'te çıkar) — sınırda titreyip spam yapmaz. Tarama 15 dk'da bir.
+
+## 3) Dashboard
+
+Servis bir web sayfası da sunar: range kartları (eğimli kanal + sparkline),
+tüm coinlerin skor tablosu (elenme sebepleriyle) ve funding tablosu; 60 sn'de
+bir kendini yeniler. Açmak için Railway'de: **Service → Settings → Networking
+→ Generate Domain.** Çıkan adres dashboard'dur (`/api/state` ham JSON verir).
+
 ## Kurulum
 
 ### 1. Telegram botu
@@ -79,14 +122,21 @@ Saatler TR saatidir (`TZ_OFFSET_HOURS`).
 3. Tarayıcıda `https://api.telegram.org/bot<TOKEN>/getUpdates` aç,
    `"chat":{"id":123456789...}` içindeki sayı senin `CHAT_ID`'n.
 
+**Range kanalı için:** ikinci bir grup/kanal aç, aynı botu ekle (kanalsa
+yönetici yap), oraya bir mesaj at ve `getUpdates`'te görünen yeni id'yi
+`RANGE_CHAT_ID` olarak kaydet (gruplarda `-` ile, kanallarda `-100` ile
+başlar). `RANGE_CHAT_ID` boş kalırsa range mesajları sadece log'a yazılır.
+
 ### 2. Railway'e deploy
 
 1. [railway.com](https://railway.com) → **New Project** → **Deploy from GitHub repo** → bu repoyu seç.
 2. Service → **Variables** sekmesinde ekle:
    - `TELEGRAM_TOKEN` = BotFather token'ı
-   - `CHAT_ID` = yukarıdaki chat id
-3. Deploy et. Bot web servisi değil worker'dır, port/domain gerekmez.
-   Loglarda başlangıç raporunu görmelisin; aynı rapor Telegram'a da düşer.
+   - `CHAT_ID` = funding kanalının id'si
+   - `RANGE_CHAT_ID` = range kanalının id'si
+3. Deploy et. Loglarda iki başlangıç raporu görmelisin; aynı raporlar ilgili
+   Telegram kanallarına da düşer.
+4. Dashboard için: Service → Settings → **Networking → Generate Domain**.
 
 ## Ayarlar (opsiyonel env değişkenleri)
 
@@ -102,6 +152,22 @@ Saatler TR saatidir (`TZ_OFFSET_HOURS`).
 | `POSITION_SIZE_USD` | `10000` | Kazanç örneğinin hesaplandığı bacak büyüklüğü. |
 | `TZ_OFFSET_HOURS` | `3` | Mesajdaki saat gösterimi (TR = +3). |
 | `RUN_ONCE` | — | `1` yapılırsa tek tarama yapıp çıkar (sadece test için). |
+
+Range finder'a özel:
+
+| Değişken | Varsayılan | Açıklama |
+|---|---|---|
+| `RANGE_CHAT_ID` | — | Range bildirimlerinin gideceği kanal (zorunlu). |
+| `RANGE_INTERVAL` | `15m` | Mum periyodu (`5m`, `15m`, `30m`, `1h`…). |
+| `RANGE_LOOKBACK_HOURS` | `24` | İncelenen pencere. |
+| `RANGE_SCAN_MINUTES` | `15` | Tarama sıklığı. |
+| `RANGE_MIN_WIDTH` / `RANGE_MAX_WIDTH` | `2` / `20` | Bant genişliği sınırları (%). |
+| `RANGE_MIN_TOUCHES` | `4` | En az dönüşümlü bant dokunuşu. |
+| `RANGE_MAX_DRIFT` | `1.5` | Trendin bant yüksekliğine oranı üst sınırı. |
+| `RANGE_SCORE_ENTER` / `RANGE_SCORE_EXIT` | `60` / `45` | Giriş/çıkış skoru (histerezis). |
+| `EDGE_ALERTS` | `1` | Alt/üst bant uyarıları (`0` = kapat). |
+| `EDGE_ZONE` | `0.15` | Kenar bölgesi (bandın %15'i). |
+| `EDGE_COOLDOWN_MINUTES` | `90` | Aynı kenar için tekrar uyarı aralığı. |
 
 ## Coin listesini güncelleme
 
