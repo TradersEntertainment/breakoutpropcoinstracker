@@ -13,5 +13,15 @@
     "BERA", "TIA", "PURR", "DYDX", "ENS", "LINEA"
   ],
   "overrides": {},
-  "exclude": []
+  "exclude": [],
+  "_comment_eq": "Breakout Prop'taki hisse/endeks perp'leri (EQ). Veri Hyperliquid'den gelir; Binance eşleşmesi yok. Range için ayrı eşikler: RANGE_MIN_PROFIT_EQ / RANGE_MIN_WIDTH_EQ.",
+  "eqAssets": [
+    "SKHX", "SPCX", "SNDK", "MU", "DRAM", "PLTR", "SKHY", "SMSN", "MSFT", "GOOGL",
+    "LITE", "META", "EWY", "NBIS", "NVDA", "CXMT", "INTC", "CRWV", "CRCL", "TSLA",
+    "RKLB", "AAPL", "MRVL", "AMZN", "SOXL", "MINIMAX", "ORCL", "CBRS", "AMD", "COIN",
+    "MSTR", "KIOXIA", "JP225", "DELL", "TSM", "HOOD", "BOT", "ZHIPU", "LLY", "UNITREE",
+    "BB", "NFLX", "BE", "HIMS", "IBM", "SHAZ", "ASML", "USAR", "BABA", "ARM",
+    "HYUNDAI", "AVGO", "PURRDAT", "KR200", "NOK", "GIGADEV", "QNT", "WDC", "LYTE", "QCOM",
+    "EWJ", "STRC", "SMH", "XLE", "NOW", "GME", "URNM"
+  ]
 }

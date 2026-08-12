@@ -151,6 +151,7 @@ def load_assets_config() -> dict:
     cfg.setdefault("assets", [])
     cfg.setdefault("overrides", {})
     cfg.setdefault("exclude", [])
+    cfg.setdefault("eqAssets", [])
     return cfg
 
 
@@ -165,16 +166,38 @@ def binance_candidates(hl_name: str) -> list[str]:
     return [f"{upper}USDT", f"1000{upper}USDT"]
 
 
-def fetch_binance_perp_symbols() -> set[str]:
-    """İşleme açık USDT-M perpetual sembolleri."""
+def fetch_binance_perp_meta() -> dict[str, str]:
+    """İşleme açık USDT-M perpetual'lar: sembol → underlyingType."""
     data = get_json(f"{FAPI}/exchangeInfo")
     return {
-        s["symbol"]
+        s["symbol"]: (s.get("underlyingType") or "")
         for s in data.get("symbols", [])
         if s.get("contractType") == "PERPETUAL"
         and s.get("status") == "TRADING"
         and s.get("quoteAsset") == "USDT"
     }
+
+
+def fetch_binance_perp_symbols() -> set[str]:
+    """İşleme açık USDT-M perpetual sembolleri."""
+    return set(fetch_binance_perp_meta())
+
+
+def build_eq_binance_mapping(eq_assets: list[str], perp_meta: dict[str, str]) -> dict[str, str]:
+    """Hisse (EQ) adı → Binance sembolü.
+
+    Aynı ada sahip KRİPTO kontratla karışmasın diye underlyingType'ı
+    "COIN" olan semboller kabul edilmez (ör. QNTUSDT kripto Quant'tır,
+    hisse QNT değil). Hisse/endeks tipli bir kontrat yoksa eşleşmez ve
+    çağıran taraf Hyperliquid verisine düşer.
+    """
+    mapping: dict[str, str] = {}
+    for asset in eq_assets:
+        symbol = f"{asset.upper()}USDT"
+        underlying = perp_meta.get(symbol)
+        if underlying and underlying.upper() not in ("COIN", "CRYPTO"):
+            mapping[asset] = symbol
+    return mapping
 
 
 def build_mapping(cfg: dict, perp_symbols: set[str]) -> tuple[dict[str, str], list[str]]:
@@ -223,21 +246,46 @@ def fetch_ticker_24h() -> dict[str, dict]:
         return {}
 
 
-def fetch_hyperliquid_funding() -> dict[str, float]:
-    """HL coin adı → saatlik funding (% cinsinden)."""
+_hl_dex_cache: dict = {"names": [], "ts": 0.0}
+
+
+def list_hl_dexes() -> list[str]:
+    """Builder perp dex adları (6 saat önbellekli)."""
+    if time.time() - _hl_dex_cache["ts"] < 6 * 3600 and _hl_dex_cache["names"]:
+        return _hl_dex_cache["names"]
+    names: list[str] = []
     try:
-        data = post_json(HYPERLIQUID_INFO, {"type": "metaAndAssetCtxs"})
-        universe = data[0].get("universe", [])
-        contexts = data[1]
-        result: dict[str, float] = {}
-        for meta, ctx in zip(universe, contexts):
-            funding = ctx.get("funding")
-            if funding is not None:
-                result[meta["name"]] = safe_float(funding) * 100
-        return result
+        for entry in post_json(HYPERLIQUID_INFO, {"type": "perpDexs"}) or []:
+            if isinstance(entry, dict) and entry.get("name"):
+                names.append(entry["name"])
+            elif isinstance(entry, str) and entry:
+                names.append(entry)
+        _hl_dex_cache.update(names=names, ts=time.time())
     except Exception as error:
-        log(f"Hyperliquid funding alınamadı (mesaj HL verisi olmadan gidecek): {error}")
-        return {}
+        log(f"HL perpDexs alınamadı: {error}")
+    return names
+
+
+def fetch_hyperliquid_funding(include_dexes: bool = False) -> dict[str, float]:
+    """HL coin adı → saatlik funding (%). include_dexes ile builder
+    dex'lerdeki (hisse perp'leri gibi) coinler de dahil edilir."""
+    result: dict[str, float] = {}
+    dexes = [""] + (list_hl_dexes() if include_dexes else [])
+    for dex in dexes:
+        payload: dict = {"type": "metaAndAssetCtxs"}
+        if dex:
+            payload["dex"] = dex
+        try:
+            data = post_json(HYPERLIQUID_INFO, payload)
+            universe = data[0].get("universe", [])
+            contexts = data[1]
+            for meta, ctx in zip(universe, contexts):
+                funding = ctx.get("funding")
+                if funding is not None:
+                    result.setdefault(meta["name"], safe_float(funding) * 100)
+        except Exception as error:
+            log(f"Hyperliquid funding alınamadı (dex={dex or 'ana'}): {error}")
+    return result
 
 
 # ── Telegram ─────────────────────────────────────────────────────────
@@ -505,9 +553,11 @@ def publish_funding_state(
     intervals: dict[str, float],
     premium: dict[str, dict],
     unmatched: list[str],
+    markets: dict[str, str] | None = None,
 ) -> None:
     """Dashboard için güncel funding görünümünü paylaşır."""
-    hl_funding = fetch_hyperliquid_funding()  # hata durumunda {} döner
+    markets = markets or {}
+    hl_funding = fetch_hyperliquid_funding(include_dexes=bool(markets))
     coins = []
     for hl_name, symbol in mapping.items():
         data = premium.get(symbol)
@@ -517,6 +567,7 @@ def publish_funding_state(
         coins.append({
             "coin": hl_name,
             "symbol": symbol,
+            "market": markets.get(hl_name, "kripto"),
             "rate_pct": round(safe_float(data.get("lastFundingRate")) * 100, 4),
             "interval_h": intervals.get(symbol, 8.0),
             "next_funding": safe_float(data.get("nextFundingTime")) / 1000,
@@ -539,6 +590,7 @@ def scan(
     intervals: dict[str, float],
     last_alerts: dict[str, tuple[float, float]],
     reminded: dict[tuple[str, float], set[int]] | None = None,
+    include_hl_dexes: bool = False,
 ) -> tuple[list[str], dict[str, dict]]:
     """Bir tarama yapar; bildirim bloklarını ve premium verisini döndürür.
 
@@ -594,7 +646,7 @@ def scan(
 
     blocks: list[str] = []
     if triggered:
-        hl_funding = fetch_hyperliquid_funding()
+        hl_funding = fetch_hyperliquid_funding(include_dexes=include_hl_dexes)
         tickers = fetch_ticker_24h()
         # En yüksek |funding| en üstte
         triggered.sort(key=lambda item: abs(item[2]), reverse=True)
@@ -625,15 +677,21 @@ def main() -> None:
     # Açılışta Binance listesi gelene kadar bekle (geçici ağ hatasında ölme)
     while True:
         try:
-            perp_symbols = fetch_binance_perp_symbols()
+            perp_meta = fetch_binance_perp_meta()
             break
         except Exception as error:
             log(f"exchangeInfo alınamadı, 30 sn sonra tekrar: {error}")
             time.sleep(30)
 
-    mapping, unmatched = build_mapping(cfg, perp_symbols)
+    mapping, unmatched = build_mapping(cfg, set(perp_meta))
+    eq_mapping = build_eq_binance_mapping(cfg["eqAssets"], perp_meta)
+    markets = {coin: "hisse" for coin in eq_mapping}
+    watch = {**mapping, **eq_mapping}
     intervals = fetch_funding_intervals()
-    log(f"Eşleşen {len(mapping)} coin, eşleşmeyen {len(unmatched)}: {', '.join(unmatched) or '-'}")
+    seen_types = sorted({t for t in perp_meta.values() if t})
+    log(f"Eşleşen {len(mapping)} kripto + {len(eq_mapping)} hisse; "
+        f"eşleşmeyen kripto {len(unmatched)}: {', '.join(unmatched) or '-'} · "
+        f"Binance underlyingType değerleri: {seen_types}")
     send_telegram(startup_message(cfg, mapping, unmatched), enabled=FUNDING_ALERTS)
 
     last_alerts: dict[str, tuple[float, float]] = {}
@@ -648,18 +706,22 @@ def main() -> None:
         cycle_start = time.time()
         try:
             if cycle_start >= next_mapping_refresh:
-                perp_symbols = fetch_binance_perp_symbols()
-                new_mapping, new_unmatched = build_mapping(cfg, perp_symbols)
+                perp_meta = fetch_binance_perp_meta()
+                new_mapping, new_unmatched = build_mapping(cfg, set(perp_meta))
                 added = sorted(set(new_mapping) - set(mapping))
                 removed = sorted(set(mapping) - set(new_mapping))
                 if added or removed:
                     log(f"Eşleşme güncellendi — yeni: {added or '-'} çıkan: {removed or '-'}")
                 mapping, unmatched = new_mapping, new_unmatched
+                eq_mapping = build_eq_binance_mapping(cfg["eqAssets"], perp_meta)
+                markets = {coin: "hisse" for coin in eq_mapping}
+                watch = {**mapping, **eq_mapping}
                 intervals = fetch_funding_intervals()
                 next_mapping_refresh = cycle_start + MAPPING_REFRESH_HOURS * 3600
 
-            blocks, premium = scan(mapping, intervals, last_alerts, reminded)
-            publish_funding_state(mapping, intervals, premium, unmatched)
+            blocks, premium = scan(watch, intervals, last_alerts, reminded,
+                                   include_hl_dexes=bool(eq_mapping))
+            publish_funding_state(watch, intervals, premium, unmatched, markets)
             if blocks:
                 # Başlık yok — her blok kendi başına okunur
                 send_telegram(SEPARATOR.join(blocks), enabled=FUNDING_ALERTS)

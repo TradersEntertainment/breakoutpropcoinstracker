@@ -227,10 +227,12 @@ function fundingActions(fd, now) {
 function swingTxt(h) { return h ? "~" + (h < 10 ? h.toFixed(1) : Math.round(h)) + "sa" : null; }
 
 function rangeActions(rg, size) {
-  const zone = rg.edge_zone ?? 0.15, minPot = rg.min_profit ?? 0;
+  const zone = rg.edge_zone ?? 0.15;
   const ov = rg.break_overshoot ?? 0.25, out = [];
   for (const m of rg.coins || []) {
     if (!m.ranging) continue;
+    // Coin kendi eşiğini taşır: kripto %2.5, hisse %0.4 (yüksek kaldıraç)
+    const minPot = m.min_profit ?? rg.min_profit ?? 0;
     let a = null;
     // Bandı taşma payından (ov) fazla aşan fiyat range işlemi değildir — elenir
     if (m.position >= -ov && m.position <= zone) {
@@ -274,7 +276,8 @@ function actionCard(a, meta) {
   const swing = swingTxt(m.swing_hours);
   return `<div class="card act">
     <div class="top">${badge(a.side)}<span class="coin">${esc(a.coin)}</span>
-      <span class="src">range ${a.side === "LONG" ? "alt" : "üst"} bandı</span></div>
+      <span class="src">range ${a.side === "LONG" ? "alt" : "üst"} bandı${
+        m.market === "hisse" ? " · hisse (HL)" : ""}</span></div>
     <div class="rows">
       <span>Hedefe varırsa: <b>+%${a.pot.toFixed(1)}</b>
         · ${a.size.toLocaleString("tr-TR")}$ ile ≈ <b>${fmtUsd(est)}</b>${
@@ -496,7 +499,8 @@ function render(data) {
     { lbl: "Şimdi işlem", val: acts.length,
       sub: acts.length ? (longs + " long · " + shorts + " short") : "sinyal bekleniyor" },
     { lbl: "Range'de coin", val: ranging.length,
-      sub: rg.updated ? (rg.interval + " · " + rg.lookback_hours + "sa pencere") : "bekleniyor" },
+      sub: rg.updated ? (ranging.filter(c => c.market === "hisse").length + " hisse · " +
+           rg.interval + " · " + rg.lookback_hours + "sa") : "bekleniyor" },
     { lbl: "En uç funding", val: topFund ? topFund.rate_pct.toFixed(3) + "%" : "–",
       sub: topFund ? (topFund.coin + " · eşik ±" + (fd.threshold ?? 0.7) + "%") : "" },
     { lbl: "İzlenen coin", val: fd.matched ?? coins.length,
@@ -561,7 +565,7 @@ function render(data) {
           ` · kenardan tur ≈ <b>+%${tour.toFixed(1)}</b>`;
       return `<div class="card">
         <div class="top"><span class="coin">${esc(m.coin)}</span>
-          <span class="sym">${esc(m.symbol)}</span>
+          <span class="sym">${esc(m.symbol)}${m.market === "hisse" ? " · EQ" : ""}</span>
           <span class="chip on">✓ RANGE ${m.score.toFixed(0)}</span></div>
         <div class="meta">
           <span>tur kârı <b>+%${tour.toFixed(1)}</b></span>
@@ -590,7 +594,7 @@ function render(data) {
     "<tr><th>Coin</th><th>Skor</th><th>Tur kârı</th><th>Tur süresi</th><th>Genişlik</th>" +
     "<th>Dokunuş</th><th>Eğim</th><th>Konum</th><th>Durum</th></tr>" +
     (coins.length ? coins.map(m => `<tr>
-      <td class="coin">${esc(m.coin)}</td>
+      <td class="coin">${esc(m.coin)}${m.market === "hisse" ? ' <span class="why">EQ</span>' : ""}</td>
       <td><span class="bar"><i style="width:${Math.min(100, m.score)}%"></i>` +
         `<span class="tick" style="left:${rg.score_enter ?? 60}%"></span></span> ` +
         `${m.score.toFixed(0)}</td>
@@ -614,7 +618,8 @@ function render(data) {
       const hot = Math.abs(c.rate_pct) >= th;
       const mins = c.next_funding ? Math.max(0, Math.round((c.next_funding - now)/60)) : null;
       return `<tr class="${hot ? "hot" : ""}">
-        <td class="coin">${hot ? "⚡ " : ""}${esc(c.coin)}</td>
+        <td class="coin">${hot ? "⚡ " : ""}${esc(c.coin)}${
+          c.market === "hisse" ? ' <span class="why">EQ</span>' : ""}</td>
         <td class="${c.rate_pct > 0 ? "up" : c.rate_pct < 0 ? "down" : ""}">` +
           `${c.rate_pct > 0 ? "▲" : c.rate_pct < 0 ? "▼" : ""} ` +
           `<span style="color:var(--ink)">${(c.rate_pct>0?"+":"") + c.rate_pct.toFixed(4)}%</span></td>
@@ -632,9 +637,11 @@ function render(data) {
     ((fd.unmatched || []).length ? "Binance'te eşleşmeyen: " + esc(fd.unmatched.join(", ")) + "<br>" : "") +
     "Funding aksiyonu HL bacağıdır (funding negatif → HL SHORT + Binance LONG; pozitif → tersi). " +
     "Range: %0 alt bant (LONG bölgesi), %100 üst bant (SHORT bölgesi), kenar bölgesi %" +
-    ((zone)*100).toFixed(0) + ", minimum tur kârı %" + (rg.min_profit ?? "-") +
-    " (altında kalan range sayılmaz). Kâr tahminleri " + size.toLocaleString("tr-TR") +
-    "$ pozisyon içindir, kaldıraç ve komisyon hariçtir. " +
+    ((zone)*100).toFixed(0) + ", minimum tur kârı kripto %" + (rg.min_profit ?? "-") +
+    " / hisse (EQ) %" + (rg.min_profit_eq ?? "-") +
+    " (altında kalan range sayılmaz). EQ verisi Hyperliquid'den gelir; hisse piyasası " +
+    "kapalıyken (hafta sonu) EQ range'leri görünmeyebilir. Kâr tahminleri " +
+    size.toLocaleString("tr-TR") + "$ pozisyon içindir, kaldıraç ve komisyon hariçtir. " +
     "Skor çubuğundaki çizgi giriş eşiği (" + (rg.score_enter ?? 60) + "), " +
     "funding çubuğundaki çizgi alarm eşiği (±" + th + "%). Saatler UTC+" + TZ +
     ". Sayfa 60 sn'de bir yenilenir. Bilgi amaçlıdır, emir vermez.";

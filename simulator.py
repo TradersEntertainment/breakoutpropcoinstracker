@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import state
+from bot import HYPERLIQUID_INFO, post_json, safe_float
 
 # ── Ayarlar ──────────────────────────────────────────────────────────
 
@@ -81,6 +82,40 @@ VARIANTS = [
 def log(message: str) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{stamp} UTC] [sim] {message}", flush=True)
+
+
+def fetch_hl_prices(metrics: dict) -> dict[str, float]:
+    """Hisse (EQ) coinleri için Hyperliquid mid fiyatları — dex başına tek istek.
+
+    Binance mark'ı olmayan coinlerde tarama arası (15 dk) fiyat çok bayat
+    kalır; dakikalık tick bu mid'lerle beslenir. Hata olursa {} döner ve
+    taramanın son fiyatı kullanılır.
+    """
+    # Binance'ten izlenen EQ'ların mark fiyatı zaten funding akışında var;
+    # burada yalnız HL kaynaklı olanlar (dex:isim biçimli) sorgulanır.
+    coins = {c: m["symbol"] for c, m in metrics.items()
+             if m.get("market") == "hisse" and m.get("symbol")
+             and (":" in m["symbol"] or not m["symbol"].endswith("USDT"))}
+    if not coins:
+        return {}
+    prices: dict[str, float] = {}
+    dexes = {full.split(":", 1)[0] if ":" in full else "" for full in coins.values()}
+    for dex in dexes:
+        payload: dict = {"type": "allMids"}
+        if dex:
+            payload["dex"] = dex
+        try:
+            mids = post_json(HYPERLIQUID_INFO, payload) or {}
+        except Exception as error:
+            log(f"HL allMids alınamadı (dex={dex or 'ana'}): {error}")
+            continue
+        for coin, full in coins.items():
+            name = full.split(":", 1)[1] if ":" in full else full
+            value = mids.get(full) or mids.get(name)
+            price = safe_float(value)
+            if price > 0:
+                prices[coin] = price
+    return prices
 
 
 # ── Simülatör ────────────────────────────────────────────────────────
@@ -229,6 +264,7 @@ class Simulator:
             "closed": now,
             "held_hours": round(held_hours, 2),
             # giriş anındaki bağlam — analiz için
+            "market": p.get("market", "kripto"),
             "score": p.get("score"),
             "width_pct": p.get("width_pct"),
             "touches": p.get("touches"),
@@ -269,7 +305,8 @@ class Simulator:
                 continue
             direction = 1 if side == "LONG" else -1
             expected_pct = (target - price) / price * 100 * direction
-            if expected_pct < min_profit:
+            # Hisse tarafının eşiği daha düşük — coin kendi eşiğini taşır
+            if expected_pct < m.get("min_profit", min_profit):
                 continue
 
             margin = self.data["balance"] / MAX_POSITIONS
@@ -295,6 +332,7 @@ class Simulator:
                 "touches": m.get("touches"),
                 "drift_day_pct": m.get("drift_day_pct"),
                 "swing_hours": m.get("swing_hours"),
+                "market": m.get("market", "kripto"),
                 "expected_pct": round(expected_pct, 2),
             }
             self._dirty = True
@@ -396,6 +434,14 @@ def main() -> None:
             snapshot = state.snapshot()
             ranges = snapshot.get("ranges") or {}
             funding = snapshot.get("funding") or {}
+            # Hisse coinlerinin dakikalık fiyatı HL mid'lerinden gelir
+            metrics = {m["coin"]: m for m in ranges.get("coins", []) if m.get("coin")}
+            hl_prices = fetch_hl_prices(metrics)
+            if hl_prices:
+                funding = dict(funding)
+                funding["coins"] = list(funding.get("coins", [])) + [
+                    {"coin": c, "mark_price": p} for c, p in hl_prices.items()
+                ]
             now = time.time()
             views = [sim.tick(ranges, funding, now) for sim in sims]
             publish(views, now)

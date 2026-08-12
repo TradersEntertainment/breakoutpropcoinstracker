@@ -15,7 +15,9 @@ Breakout Prop'ta (Hyperliquid) listeli coinler için dört parça, tek Railway s
 Binance Futures (USDT-M perpetual) funding oranı **mutlak değerce %0.7'yi
 geçtiğinde** Telegram'a bildirim atar. Mantık: %1 hedef, 0.3 tolerans → alt
 sınır ±%0.7, üst sınır yok (yani +0.9, -0.75, -2, -4 hepsi bildirim üretir;
-+0.5 üretmez).
++0.5 üretmez). Binance'te hisse tipli kontratı bulunan `eqAssets` coinleri de
+funding takibine dahildir (EQ etiketiyle); HL funding karşılaştırması bu
+coinler için ilgili builder dex'ten çekilir.
 
 Mesajda karşılaştırma için Hyperliquid'in **saatlik** funding'i de gösterilir —
 HL'de funding saat başı ödendiği için genelde çok daha küçüktür; fark arb fırsatıdır:
@@ -84,11 +86,23 @@ Saatler TR saatidir (`TZ_OFFSET_HOURS`).
 
 ## 2) Range finder
 
-Aynı coin listesini kullanır. Aranan form: sürekli alçalarak/yükselerek de olsa
-**bir bant içinde gitgel yapan** fiyat (ör. KAITO'nun 0.66–0.72 arasında
-defalarca gidip gelmesi). Sinyaller **dashboard'da** gösterilir; Telegram
-bildirimi varsayılan olarak **kapalıdır** (açmak istersen `RANGE_ALERTS=1` +
-`RANGE_CHAT_ID` ayarla).
+İki grup taranır. Aranan form: sürekli alçalarak/yükselerek de olsa **bir bant
+içinde gitgel yapan** fiyat (ör. KAITO'nun 0.66–0.72 arasında defalarca gidip
+gelmesi). Sinyaller **dashboard'da** gösterilir; Telegram bildirimi varsayılan
+olarak **kapalıdır** (açmak istersen `RANGE_ALERTS=1` + `RANGE_CHAT_ID`).
+
+- **Kripto** (`assets` listesi): mum verisi Binance Futures'tan.
+- **Hisse/endeks perp'leri — EQ** (`eqAssets` listesi): önce **Binance'te**
+  aranır — ama yalnız hisse/endeks tipli kontratlar kabul edilir
+  (`underlyingType` kontrolü; ör. `QNTUSDT` kripto Quant olduğu için hisse
+  QNT ile eşleşmez). Binance'te bulunursa mumlar oradan gelir ve coin
+  **funding takibine de girer** (hisse funding arb'ı). Bulunamayanların
+  mumları **Hyperliquid'in kendi API'sinden** çekilir (tüm builder dex'ler
+  otomatik keşfedilir). Yüksek kaldıraçla girildiği için eşikleri ayrıdır:
+  **minimum tur kârı %0.4**, minimum genişlik %0.5 — dar range de sayılır,
+  yeter ki gitgel yapsın. Dashboard'da `EQ` etiketiyle görünürler. Hisse
+  piyasası kapalıyken (hafta sonu) mumlar akmadığından EQ range'leri o
+  dönemde görünmeyebilir.
 
 Nasıl bulur: son 24 saatin 15 dakikalık kapanışlarına doğrusal bir trend
 uydurur (eğimli kanal), trendden arındırılmış seride bandı (p5–p95) çıkarır ve
@@ -97,8 +111,8 @@ uydurur (eğimli kanal), trendden arındırılmış seride bandı (p5–p95) ç�
 | Metrik | Kriter (varsayılan) |
 |---|---|
 | Bant dokunuşu (alt ↔ üst dönüşümlü) | ≥ 4 |
-| Bant genişliği | %2 – %20 |
-| Tur kârı (kenardan karşı banda hareket) | ≥ %2.5 |
+| Bant genişliği | kripto %2 – %20 · EQ %0.5 – %20 |
+| Tur kârı (kenardan karşı banda hareket) | kripto ≥ %2.5 · EQ ≥ %0.4 |
 | Trendin banda oranı | ≤ 1.5× (eğimli kanal serbest, düz trend elenir) |
 | Skor (dokunuş + genişlik + eğim + verimlilik) | ≥ 60 girer, < 45 çıkar |
 
@@ -242,6 +256,8 @@ Range finder'a özel:
 | `RANGE_MIN_WIDTH` / `RANGE_MAX_WIDTH` | `2` / `20` | Bant genişliği sınırları (%). |
 | `RANGE_MIN_TOUCHES` | `4` | En az dönüşümlü bant dokunuşu. |
 | `RANGE_MIN_PROFIT` | `2.5` | Minimum tur kârı (%); altında kalan range sayılmaz. |
+| `RANGE_MIN_PROFIT_EQ` | `0.4` | Hisse (EQ) tarafının minimum tur kârı (%). |
+| `RANGE_MIN_WIDTH_EQ` | `0.5` | Hisse (EQ) tarafının minimum bant genişliği (%). |
 | `RANGE_MAX_DRIFT` | `1.5` | Trendin bant yüksekliğine oranı üst sınırı. |
 | `RANGE_SCORE_ENTER` / `RANGE_SCORE_EXIT` | `60` / `45` | Giriş/çıkış skoru (histerezis). |
 | `EDGE_ALERTS` | `1` | Alt/üst bant uyarıları (`0` = kapat). |
@@ -250,8 +266,9 @@ Range finder'a özel:
 
 ## Coin listesini güncelleme
 
-Prop'a coin eklenince/çıkınca `assets.json` içindeki `assets` listesini düzenleyip
-push'la — Railway otomatik yeniden deploy eder.
+Prop'a coin eklenince/çıkınca `assets.json` içindeki `assets` (kripto) veya
+`eqAssets` (hisse) listesini düzenleyip push'la — Railway otomatik yeniden
+deploy eder.
 
 - **`overrides`**: otomatik eşleşme yanlış coine denk gelirse elle düzelt:
   `"overrides": { "LIT": "LITUSDT" }` ya da doğru sembol her neyse.

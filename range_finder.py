@@ -23,6 +23,7 @@ import bot
 import state
 from bot import (
     FAPI,
+    HYPERLIQUID_INFO,
     SEPARATOR,
     _env,
     _env_num,
@@ -32,6 +33,7 @@ from bot import (
     get_json,
     load_assets_config,
     log,
+    post_json,
     safe_float,
     send_telegram,
 )
@@ -48,6 +50,11 @@ MAX_WIDTH = _env_num("RANGE_MAX_WIDTH", 20.0)     # % — bundan geniş "range" 
 # Kenardan karşı banda beklenen fiyat hareketi (%). Tur kârı bunun altında
 # kalan range'ler hiç "range" sayılmaz — işlem maliyetine değmez.
 MIN_PROFIT = _env_num("RANGE_MIN_PROFIT", 2.5)
+
+# Hisse (EQ) perp'leri: yüksek kaldıraçla girildiği için dar range de kabul.
+# Veri kaynağı Hyperliquid'in kendi mumlarıdır (Binance'te bu ürünler yok).
+MIN_PROFIT_EQ = _env_num("RANGE_MIN_PROFIT_EQ", 0.4)
+MIN_WIDTH_EQ = _env_num("RANGE_MIN_WIDTH_EQ", 0.5)
 MIN_TOUCHES = int(_env_num("RANGE_MIN_TOUCHES", 4))
 MAX_DRIFT = _env_num("RANGE_MAX_DRIFT", 1.5)      # trendin bant yüksekliğine oranı
 SCORE_ENTER = _env_num("RANGE_SCORE_ENTER", 60)
@@ -112,7 +119,12 @@ def clamp(value: float, low: float, high: float) -> float:
 # ── Range analizi ────────────────────────────────────────────────────
 
 
-def analyze_series(closes: list[float]) -> dict | None:
+def analyze_series(
+    closes: list[float],
+    min_width: float = MIN_WIDTH,
+    max_width: float = MAX_WIDTH,
+    min_profit: float = MIN_PROFIT,
+) -> dict | None:
     """Kapanış serisinden range metrikleri üretir; veri yetersizse None."""
     n = len(closes)
     if n < 30 or any(c <= 0 for c in closes):
@@ -172,12 +184,12 @@ def analyze_series(closes: list[float]) -> dict | None:
 
     # Elemeler: biri düşerse skor 0 ve sebep yazılır
     reasons = []
-    if width_pct < MIN_WIDTH:
+    if width_pct < min_width:
         reasons.append("dar bant")
-    if width_pct > MAX_WIDTH:
+    if width_pct > max_width:
         reasons.append("aşırı geniş")
-    if potential_pct < MIN_PROFIT:
-        reasons.append(f"tur kârı < %{MIN_PROFIT:g}")
+    if potential_pct < min_profit:
+        reasons.append(f"tur kârı < %{min_profit:g}")
     if touches < MIN_TOUCHES:
         reasons.append("az dokunuş")
     if drift_ratio > MAX_DRIFT:
@@ -187,12 +199,13 @@ def analyze_series(closes: list[float]) -> dict | None:
         score = 0.0
     else:
         touches_score = clamp(touches / 8, 0, 1)
-        if 3 <= width_pct <= 10:
+        ideal_low = max(min_width * 1.5, min(3.0, max_width / 2))
+        if ideal_low <= width_pct <= 10:
             width_score = 1.0
-        elif width_pct < 3:
-            width_score = 0.6 + 0.4 * (width_pct - MIN_WIDTH) / max(3 - MIN_WIDTH, 1e-9)
+        elif width_pct < ideal_low:
+            width_score = 0.6 + 0.4 * (width_pct - min_width) / max(ideal_low - min_width, 1e-9)
         else:
-            width_score = 1.0 - 0.6 * (width_pct - 10) / max(MAX_WIDTH - 10, 1e-9)
+            width_score = 1.0 - 0.6 * (width_pct - 10) / max(max_width - 10, 1e-9)
         drift_score = 1.0 - 0.6 * clamp(drift_ratio / MAX_DRIFT, 0, 1)
         er_score = 1.0 - clamp(efficiency / 0.5, 0, 1)
         score = 100 * (
@@ -234,8 +247,73 @@ def fetch_closes(symbol: str) -> list[float]:
     return [safe_float(k[4]) for k in data if isinstance(k, (list, tuple)) and len(k) > 4]
 
 
-def sweep(mapping: dict[str, str]) -> dict[str, dict]:
-    """Tüm coinleri tarar; coin → metrik sözlüğü döndürür."""
+# ── Hyperliquid hisse (EQ) tarafı ────────────────────────────────────
+
+
+def discover_hl_assets() -> dict[str, str]:
+    """Ana dex + tüm builder dex'lerdeki coinler: isim → tam id ("dex:isim")."""
+    mapping: dict[str, str] = {}
+    dex_names = [""] + bot.list_hl_dexes()
+    for dex in dex_names:
+        payload: dict = {"type": "meta"}
+        if dex:
+            payload["dex"] = dex
+        try:
+            meta = post_json(HYPERLIQUID_INFO, payload)
+            for asset in meta.get("universe", []):
+                name = asset.get("name")
+                if not name or asset.get("isDelisted"):
+                    continue
+                mapping.setdefault(name, f"{dex}:{name}" if dex else name)
+        except Exception as error:
+            log(f"HL meta alınamadı (dex={dex or 'ana'}): {error}")
+        time.sleep(0.1)
+    return mapping
+
+
+def build_eq_mapping(
+    eq_assets: list[str],
+    hl_assets: dict[str, str],
+    taken: set[str],
+    binance_eq: dict[str, str] | None = None,
+) -> tuple[dict[str, dict], list[str]]:
+    """EQ listesi → veri kaynağı eşleşmesi.
+
+    Önce Binance (hisse tipli kontrat, bkz. bot.build_eq_binance_mapping);
+    orada yoksa Hyperliquid'in kendi coin id'si. İkisinde de yoksa unmatched.
+    Kripto listesindeki bir isimle çakışan atlanır.
+    """
+    binance_eq = binance_eq or {}
+    lower = {name.lower(): full for name, full in hl_assets.items()}
+    mapping: dict[str, dict] = {}
+    unmatched: list[str] = []
+    for asset in eq_assets:
+        if asset in taken:
+            continue
+        if asset in binance_eq:
+            mapping[asset] = {"src": "binance", "id": binance_eq[asset]}
+            continue
+        full = hl_assets.get(asset) or lower.get(asset.lower())
+        if full:
+            mapping[asset] = {"src": "hl", "id": full}
+        else:
+            unmatched.append(asset)
+    return mapping, unmatched
+
+
+def fetch_hl_closes(full_coin: str) -> list[float]:
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - int(LOOKBACK_HOURS * 3600 * 1000)
+    data = post_json(HYPERLIQUID_INFO, {
+        "type": "candleSnapshot",
+        "req": {"coin": full_coin, "interval": RANGE_INTERVAL,
+                "startTime": start_ms, "endTime": end_ms},
+    })
+    return [safe_float(c.get("c")) for c in data if isinstance(c, dict)]
+
+
+def sweep(mapping: dict[str, str], eq_mapping: dict[str, str] | None = None) -> dict[str, dict]:
+    """Kripto (Binance) + hisse (Hyperliquid) taraması; coin → metrik sözlüğü."""
     results: dict[str, dict] = {}
     failed = 0
     for hl_name, symbol in mapping.items():
@@ -244,11 +322,32 @@ def sweep(mapping: dict[str, str]) -> dict[str, dict]:
             if metrics:
                 metrics["coin"] = hl_name
                 metrics["symbol"] = symbol
+                metrics["market"] = "kripto"
+                metrics["min_profit"] = MIN_PROFIT
                 results[hl_name] = metrics
         except Exception as error:
             failed += 1
             log(f"{symbol} kline hatası: {error}")
         time.sleep(0.12)  # ağırlık limitine nazik davran
+    for name, source in (eq_mapping or {}).items():
+        try:
+            # Binance'te (hisse tipli kontrat olarak) varsa mumlar oradan,
+            # yoksa Hyperliquid'in kendi mumlarından
+            if source["src"] == "binance":
+                closes = fetch_closes(source["id"])
+            else:
+                closes = fetch_hl_closes(source["id"])
+            metrics = analyze_series(closes, MIN_WIDTH_EQ, MAX_WIDTH, MIN_PROFIT_EQ)
+            if metrics:
+                metrics["coin"] = name
+                metrics["symbol"] = source["id"]
+                metrics["market"] = "hisse"
+                metrics["min_profit"] = MIN_PROFIT_EQ
+                results[name] = metrics
+        except Exception as error:
+            failed += 1
+            log(f"{source['id']} mum hatası (EQ): {error}")
+        time.sleep(0.12)
     if failed:
         log(f"{failed} sembolün mum verisi alınamadı.")
     return results
@@ -386,6 +485,7 @@ def publish_range_state(results: dict[str, dict], tracker: dict, sweep_seconds: 
         "edge_zone": EDGE_ZONE,
         "break_overshoot": BREAK_OVERSHOOT,
         "min_profit": MIN_PROFIT,
+        "min_profit_eq": MIN_PROFIT_EQ,
         "position_size": bot.POSITION_SIZE,
         "ranging_count": len(ranging),
         "coins": coins,
@@ -423,15 +523,23 @@ def main() -> None:
     cfg = load_assets_config()
     while True:
         try:
-            perp_symbols = fetch_binance_perp_symbols()
+            perp_meta = bot.fetch_binance_perp_meta()
             break
         except Exception as error:
             log(f"exchangeInfo alınamadı (range), 30 sn sonra tekrar: {error}")
             time.sleep(30)
 
-    mapping, unmatched = build_mapping(cfg, perp_symbols)
-    log(f"Range finder {len(mapping)} coin izleyecek ({len(unmatched)} eşleşmedi).")
-    send_telegram(startup_message(len(mapping)), RANGE_CHAT_ID, enabled=RANGE_ALERTS)
+    mapping, unmatched = build_mapping(cfg, set(perp_meta))
+    eq_mapping, eq_unmatched = build_eq_mapping(
+        cfg["eqAssets"], discover_hl_assets(), set(mapping),
+        bot.build_eq_binance_mapping(cfg["eqAssets"], perp_meta),
+    )
+    eq_binance_count = sum(1 for s in eq_mapping.values() if s["src"] == "binance")
+    log(f"Range finder {len(mapping)} kripto + {len(eq_mapping)} hisse izleyecek "
+        f"({eq_binance_count} hisse Binance'ten, kalanı HL'den; "
+        f"eşleşmeyen kripto: {len(unmatched)}, hisse: {', '.join(eq_unmatched) or '-'}).")
+    send_telegram(startup_message(len(mapping) + len(eq_mapping)),
+                  RANGE_CHAT_ID, enabled=RANGE_ALERTS)
 
     tracker: dict = {"ranging": set(), "edge_last": {}}
     next_mapping_refresh = time.time() + bot.MAPPING_REFRESH_HOURS * 3600
@@ -440,10 +548,15 @@ def main() -> None:
         cycle_start = time.time()
         try:
             if cycle_start >= next_mapping_refresh:
-                mapping, unmatched = build_mapping(cfg, fetch_binance_perp_symbols())
+                perp_meta = bot.fetch_binance_perp_meta()
+                mapping, unmatched = build_mapping(cfg, set(perp_meta))
+                eq_mapping, eq_unmatched = build_eq_mapping(
+                    cfg["eqAssets"], discover_hl_assets(), set(mapping),
+                    bot.build_eq_binance_mapping(cfg["eqAssets"], perp_meta),
+                )
                 next_mapping_refresh = cycle_start + bot.MAPPING_REFRESH_HOURS * 3600
 
-            results = sweep(mapping)
+            results = sweep(mapping, eq_mapping)
             new_blocks, break_blocks, edge_blocks = evaluate(results, tracker, time.time())
             publish_range_state(results, tracker, time.time() - cycle_start)
 
