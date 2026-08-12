@@ -170,8 +170,14 @@ yarayıp yaramadığını görmek.
 | **%1 kırılma stopu** | LONG + SHORT | bant aleyhte %1 aşılırsa keser |
 | **Sadece LONG** | yalnız alt banttan LONG | %1 kırılma stopu |
 | **Sadece SHORT** | yalnız üst banttan SHORT | %1 kırılma stopu |
+| **%5 kırılma stopu** | LONG + SHORT | geniş stop — bant aleyhte %5 |
+| **Sadece LONG · %5** | yalnız alt banttan LONG | %5 kırılma stopu |
+| **Sadece SHORT · %5** | yalnız üst banttan SHORT | %5 kırılma stopu |
 
-Stop tanımı: SHORT'ta üst bant ×1.01, LONG'ta alt bant ×0.99 aşılırsa çık.
+Stop tanımı: SHORT'ta üst bant × (1+stop), LONG'ta alt bant × (1−stop)
+aşılırsa çık. Böylece veri üç soruyu birden cevaplar: stop işe yarıyor mu
+(stopsuz vs %1 vs %5), hangi yön kazandırıyor (sadece LONG vs sadece SHORT),
+ve dar stop mu geniş stop mu (%1 ailesi vs %5 ailesi).
 Ortak kurallar: giriş bandın kenarında ve beklenen kâr eşiğin üstünde
 (kripto `RANGE_MIN_PROFIT`, hisse `RANGE_MIN_PROFIT_EQ`), hedef karşı bant,
 zaman aşımı beklenen tur × 3, zarar marjini yerse likidasyon (kayıp =
@@ -202,7 +208,8 @@ Simülatör ayarları:
 | `SIM_SLIPPAGE_PCT` | `0.02` | Taraf başına kayma (%). |
 | `SIM_COOLDOWN_MINUTES` | `30` | Kapanan coine tekrar giriş bekleme süresi. |
 | `SIM_TIME_STOP_MULT` | `3` | Beklenen tur × N sonra çık (0 = kapalı). |
-| `SIM_STOP_BREAK_PCT` | `1.0` | 2. stratejinin stop mesafesi (bandın %'si olarak fiyat). |
+| `SIM_STOP_BREAK_PCT` | `1.0` | Dar stop ailesinin stop mesafesi (%). |
+| `SIM_STOP_BREAK_PCT_WIDE` | `5.0` | Geniş stop ailesinin stop mesafesi (%). |
 | `SIM_STATE_FILE` | otomatik | Durum klasörünü değiştirmek için (normalde gerekmez). |
 
 ## Kurulum

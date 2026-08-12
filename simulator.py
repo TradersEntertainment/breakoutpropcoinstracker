@@ -49,7 +49,8 @@ FEE_PCT = _env_num("SIM_FEE_PCT", 0.045)            # taraf başına taker %
 SLIPPAGE_PCT = _env_num("SIM_SLIPPAGE_PCT", 0.02)   # taraf başına %
 COOLDOWN_MIN = _env_num("SIM_COOLDOWN_MINUTES", 30)
 TIME_STOP_MULT = _env_num("SIM_TIME_STOP_MULT", 3)  # beklenen tur × N; 0 = kapalı
-STOP_BREAK_PCT = _env_num("SIM_STOP_BREAK_PCT", 1.0)  # 2. strateji: bant + %1
+STOP_BREAK_PCT = _env_num("SIM_STOP_BREAK_PCT", 1.0)        # dar stop: bant + %1
+STOP_BREAK_PCT_WIDE = _env_num("SIM_STOP_BREAK_PCT_WIDE", 5.0)  # geniş stop: bant + %5
 TICK_SECONDS = int(_env_num("SIM_TICK_SECONDS", 60))
 SAVE_EVERY_SECONDS = 300
 EQUITY_SAMPLE_SECONDS = 3600
@@ -80,6 +81,13 @@ VARIANTS = [
      "stop_mode": "band_pct", "stop_pct": STOP_BREAK_PCT, "sides": ["LONG"]},
     {"key": "shortonly", "name": f"Sadece SHORT · %{STOP_BREAK_PCT:g} stop",
      "stop_mode": "band_pct", "stop_pct": STOP_BREAK_PCT, "sides": ["SHORT"]},
+    # Geniş stop ailesi: aynı kurgu, stop mesafesi %5
+    {"key": "stop5", "name": f"%{STOP_BREAK_PCT_WIDE:g} kırılma stopu",
+     "stop_mode": "band_pct", "stop_pct": STOP_BREAK_PCT_WIDE},
+    {"key": "longonly5", "name": f"Sadece LONG · %{STOP_BREAK_PCT_WIDE:g} stop",
+     "stop_mode": "band_pct", "stop_pct": STOP_BREAK_PCT_WIDE, "sides": ["LONG"]},
+    {"key": "shortonly5", "name": f"Sadece SHORT · %{STOP_BREAK_PCT_WIDE:g} stop",
+     "stop_mode": "band_pct", "stop_pct": STOP_BREAK_PCT_WIDE, "sides": ["SHORT"]},
 ]
 
 
@@ -256,7 +264,9 @@ class Simulator:
         held_hours = (now - p["opened"]) / 3600
         self.data["trades"].append({
             "coin": coin,
+            "symbol": p.get("symbol"),
             "side": p["side"],
+            "entry_position": p.get("entry_position"),
             "entry": p["entry"],
             "exit": exit_price,
             "qty": p["qty"],
@@ -323,6 +333,8 @@ class Simulator:
             self.data["fees_paid"] += entry_fee
             positions[coin] = {
                 "side": side,
+                "symbol": m.get("symbol"),
+                "entry_position": round(pos_now, 3),
                 "entry": entry,
                 "qty": qty,
                 "margin": margin,
