@@ -185,9 +185,15 @@ marjin), hesap 5 eşit slot × 10x notional, taker komisyonu (%0.045/taraf) +
 kayma (%0.02) iki yönde, kapanan coine 30 dk tekrar giriş yasağı.
 
 Kapanan her işlemde giriş anındaki **skor, genişlik, dokunuş, beklenen tur
-süresi ve beklenen kâr** da kaydedilir → `/api/sim` iki stratejinin tüm ham
-verisini döker; "stop mu iyi, hangi skorlar para kazandırıyor" analizini
-bununla yaparız.
+süresi, beklenen kâr ve girişteki bant konumu** kaydedilir; ayrıca işlemin
+**grafiği** de saklanır — kapanış anında işlem penceresini kapsayan 15
+dakikalık mumlar çekilip işleme gömülür (bant seviyeleri + giriş/çıkış
+noktaları). Dashboard'daki "Son kapanan işlemler" tablosunda 📈 olan satıra
+tıklayınca grafik açılır: kazananlarda giriş→çıkış çizgisi yeşil,
+kaybedenlerde kırmızı. `/api/sim` tüm stratejilerin ham verisini (grafikler
+dahil) döker; "stop mu iyi, hangi skorlar para kazandırıyor, stoplar
+nereden yedi" analizini bununla yaparız. Grafik kaydını kapatmak istersen
+`SIM_TRADE_CHARTS=0`.
 
 ⚠️ **Kalıcılık:** Railway her deploy'da konteyneri sıfırlar. Veri kaybolmasın
 diye servise bir **Volume** bağla (Service → Settings → Volumes → mount path

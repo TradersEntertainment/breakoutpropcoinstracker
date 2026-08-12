@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import state
-from bot import HYPERLIQUID_INFO, post_json, safe_float
+from bot import FAPI, HYPERLIQUID_INFO, get_json, post_json, safe_float
 
 # ── Ayarlar ──────────────────────────────────────────────────────────
 
@@ -52,6 +52,10 @@ TIME_STOP_MULT = _env_num("SIM_TIME_STOP_MULT", 3)  # beklenen tur × N; 0 = kap
 STOP_BREAK_PCT = _env_num("SIM_STOP_BREAK_PCT", 1.0)        # dar stop: bant + %1
 STOP_BREAK_PCT_WIDE = _env_num("SIM_STOP_BREAK_PCT_WIDE", 5.0)  # geniş stop: bant + %5
 TICK_SECONDS = int(_env_num("SIM_TICK_SECONDS", 60))
+# Kapanan her işleme, giriş/çıkışın grafikte işaretlendiği mum verisi eklensin mi
+TRADE_CHARTS = os.environ.get("SIM_TRADE_CHARTS", "1") != "0"
+CHART_PAD_BARS = 12       # işlem penceresinin iki yanına eklenen 15m mum sayısı
+CHART_MAX_POINTS = 120
 SAVE_EVERY_SECONDS = 300
 EQUITY_SAMPLE_SECONDS = 3600
 MAX_EQUITY_SAMPLES = 1000
@@ -251,6 +255,56 @@ class Simulator:
             if reason:
                 self._close(coin, price, reason, now)
 
+    @staticmethod
+    def _trade_chart(p: dict, exit_price: float, now: float) -> dict | None:
+        """İşlem penceresini kapsayan 15m kapanışlar + giriş/çıkış işaretleri.
+
+        Kapanan işleme gömülür; dashboard'da satıra tıklayınca çizilir ve
+        /api/sim üzerinden analizde kullanılır. Veri alınamazsa None döner,
+        kapanış asla engellenmez.
+        """
+        symbol = p.get("symbol")
+        if not TRADE_CHARTS or not symbol:
+            return None
+        pad = CHART_PAD_BARS * 900
+        start = p["opened"] - pad
+        try:
+            if ":" in symbol or not symbol.endswith("USDT"):
+                data = post_json(HYPERLIQUID_INFO, {
+                    "type": "candleSnapshot",
+                    "req": {"coin": symbol, "interval": "15m",
+                            "startTime": int(start * 1000),
+                            "endTime": int((now + 900) * 1000)},
+                })
+                candles = [(int(c["t"]) // 1000, safe_float(c.get("c")))
+                           for c in data if isinstance(c, dict)]
+            else:
+                limit = min(400, int((now - start) / 900) + CHART_PAD_BARS + 2)
+                data = get_json(
+                    f"{FAPI}/klines?symbol={symbol}&interval=15m&limit={limit}"
+                )
+                candles = [(int(k[0]) // 1000, safe_float(k[4]))
+                           for k in data if isinstance(k, (list, tuple)) and len(k) > 4]
+                candles = [c for c in candles if c[0] >= start - 900]
+        except Exception as error:
+            log(f"{symbol} işlem grafiği alınamadı: {error}")
+            return None
+        candles = [c for c in candles if c[1] > 0]
+        if len(candles) < 5:
+            return None
+        step = max(1, len(candles) // CHART_MAX_POINTS)
+        candles = candles[::step]
+        return {
+            "t": [c[0] for c in candles],
+            "c": [c[1] for c in candles],
+            "band_low": p["band_low"],
+            "band_high": p["band_high"],
+            "entry_t": p["opened"],
+            "entry_p": p["entry"],
+            "exit_t": now,
+            "exit_p": exit_price,
+        }
+
     def _close(self, coin: str, price: float, reason: str, now: float) -> None:
         p = self.data["positions"].pop(coin)
         exit_price = self._fill_price(price, p["side"], entering=False)
@@ -287,6 +341,7 @@ class Simulator:
             "drift_day_pct": p.get("drift_day_pct"),
             "swing_hours": p.get("swing_hours"),
             "expected_pct": p.get("expected_pct"),
+            "chart": self._trade_chart(p, exit_price, now),
         })
         self.data["cooldowns"][coin] = now + COOLDOWN_MIN * 60
         self._dirty = True
@@ -395,6 +450,14 @@ class Simulator:
         reason_counts: dict[str, int] = {}
         for t in trades:
             reason_counts[t["reason"]] = reason_counts.get(t["reason"], 0) + 1
+        # Grafik verisi payload'u şişirmesin: yalnız en yeni 8 işlemde taşınır
+        # (tam geçmiş her zaman /api/sim'de)
+        recent_trades = []
+        for i, t in enumerate(trades[-20:][::-1]):
+            entry = dict(t)
+            if i >= 8:
+                entry.pop("chart", None)
+            recent_trades.append(entry)
         return {
             "key": self.key,
             "name": self.name,
@@ -411,7 +474,7 @@ class Simulator:
             "avg_loss": round(sum(t["pnl"] for t in losses) / len(losses), 2) if losses else None,
             "avg_held_hours": round(sum(t["held_hours"] for t in trades) / len(trades), 1) if trades else None,
             "reason_counts": reason_counts,
-            "recent_trades": trades[-20:][::-1],
+            "recent_trades": recent_trades,
             "equity_samples": self.data["equity_samples"][-200:],
             "since": self.data["created"],
         }

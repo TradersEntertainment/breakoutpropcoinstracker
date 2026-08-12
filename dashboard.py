@@ -399,6 +399,45 @@ function pnlTxt(v) {
   return `<span class="${cls}">${fmtUsd(v)}</span>`;
 }
 
+/* Kapanan işlemin grafiği: fiyat yolu + bant + giriş/çıkış işaretleri */
+function tradeSVG(t) {
+  const ch = t.chart;
+  if (!ch || !ch.t || ch.t.length < 2) return "";
+  const w = 640, h = 150, p = 12;
+  const t0 = ch.t[0], t1 = ch.t[ch.t.length - 1];
+  const lo = Math.min(...ch.c, ch.band_low, ch.entry_p, ch.exit_p);
+  const hi = Math.max(...ch.c, ch.band_high, ch.entry_p, ch.exit_p);
+  const X = ts => p + (w - 2*p) * (ts - t0) / ((t1 - t0) || 1);
+  const Y = v => h - p - (h - 2*p) * (v - lo) / ((hi - lo) || 1);
+  const line = ch.t.map((ts,i) => `${px(X(ts))},${px(Y(ch.c[i]))}`).join(" ");
+  const win = t.pnl > 0;
+  const col = win ? "var(--good)" : "var(--critical)";
+  const ex = px(X(Math.min(ch.exit_t, t1))), ey = px(Y(ch.exit_p));
+  const nx = px(X(Math.max(ch.entry_t, t0))), ny = px(Y(ch.entry_p));
+  return `<svg viewBox="0 0 ${w} ${h}">
+    <line x1="${p}" y1="${px(Y(ch.band_high))}" x2="${w-p}" y2="${px(Y(ch.band_high))}"
+      stroke="var(--grid)" stroke-width="1"/>
+    <line x1="${p}" y1="${px(Y(ch.band_low))}" x2="${w-p}" y2="${px(Y(ch.band_low))}"
+      stroke="var(--grid)" stroke-width="1"/>
+    <text x="${w-p}" y="${px(Y(ch.band_high))-4}" text-anchor="end" font-size="9"
+      fill="var(--muted)">üst ${fmtPrice(ch.band_high)}</text>
+    <text x="${w-p}" y="${px(Y(ch.band_low))+11}" text-anchor="end" font-size="9"
+      fill="var(--muted)">alt ${fmtPrice(ch.band_low)}</text>
+    <polyline points="${line}" fill="none" stroke="var(--s1)" stroke-width="2"
+      stroke-linejoin="round" stroke-linecap="round"/>
+    <line x1="${nx}" y1="${ny}" x2="${ex}" y2="${ey}" stroke="${col}"
+      stroke-width="1.5" opacity="0.7"/>
+    <circle cx="${nx}" cy="${ny}" r="5" fill="var(--s1)"
+      stroke="var(--surface)" stroke-width="2"/>
+    <circle cx="${ex}" cy="${ey}" r="5" fill="${col}"
+      stroke="var(--surface)" stroke-width="2"/>
+    <text x="${nx}" y="${ny - 9}" text-anchor="middle" font-size="10"
+      fill="var(--ink-2)">giriş ${fmtPrice(ch.entry_p)}</text>
+    <text x="${ex}" y="${ey + (ey > h/2 ? -9 : 17)}" text-anchor="middle" font-size="10"
+      fill="var(--ink-2)">çıkış ${fmtPrice(ch.exit_p)}</text>
+  </svg>`;
+}
+
 function renderSim(sim, now) {
   const variants = (sim && sim.enabled && sim.variants) || [];
   if (!variants.length) {
@@ -447,16 +486,18 @@ function renderSim(sim, now) {
       <td>${swingTxt(p.swing_hours) || "–"}</td>
     </tr>`).join("") : '<tr><td colspan="9" class="empty">Açık pozisyon yok — kenar bekleniyor.</td></tr>');
 
-  /* Kapananlar birleşik, kapanışa göre sıralı */
+  /* Kapananlar birleşik, kapanışa göre sıralı; grafikli satırlar tıklanabilir */
   const tradeRows = variants
     .flatMap(v => (v.recent_trades || []).map(t => ({v: v.name, t})))
     .sort((a,b) => (b.t.closed || 0) - (a.t.closed || 0)).slice(0, 30);
+  window.__tradeRows = tradeRows;
   $("simtrades").innerHTML =
     "<tr><th>Strateji</th><th>Coin</th><th>Yön</th><th>PnL</th><th>Ücret</th>" +
     "<th>Sebep</th><th>Süre</th><th>Beklenen</th><th>Skor</th><th>Kapanış</th></tr>" +
-    (tradeRows.length ? tradeRows.map(({v, t}) => `<tr>
+    (tradeRows.length ? tradeRows.map(({v, t}, i) => `<tr${t.chart ?
+        ` class="hastrade" data-trade="${i}" style="cursor:pointer" title="Grafiği aç/kapat"` : ""}>
       <td class="why">${esc(v)}</td>
-      <td class="coin">${esc(t.coin)}</td>
+      <td class="coin">${esc(t.coin)}${t.chart ? ' <span class="why">📈</span>' : ""}</td>
       <td>${badge(t.side)}</td>
       <td>${pnlTxt(t.pnl)} <span class="why">(%${t.pnl_pct_margin})</span></td>
       <td>${t.fees}$</td>
@@ -466,6 +507,20 @@ function renderSim(sim, now) {
       <td>${t.score ?? "–"}</td>
       <td>${ts(t.closed)}</td>
     </tr>`).join("") : '<tr><td colspan="10" class="empty">Henüz kapanan işlem yok.</td></tr>');
+  $("simtrades").querySelectorAll("tr.hastrade").forEach(row => {
+    row.addEventListener("click", () => {
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains("chartrow")) { next.remove(); return; }
+      const {v, t} = window.__tradeRows[Number(row.dataset.trade)];
+      const tr = document.createElement("tr");
+      tr.className = "chartrow";
+      tr.innerHTML = `<td colspan="10" style="white-space:normal">
+        <div class="why" style="margin:2px 0 6px">${esc(v)} · ${esc(t.coin)} ${t.side}
+          · giriş ${ts(t.opened)} → çıkış ${ts(t.closed)} · ${esc(t.reason)}</div>
+        <div style="max-width:660px">${tradeSVG(t)}</div></td>`;
+      row.after(tr);
+    });
+  });
 }
 
 function render(data) {
