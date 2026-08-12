@@ -159,23 +159,24 @@ tablosu (HL oranı ve aksiyon kolonuyla) var.
 
 ## 4) Simülatör — iki strateji yarışıyor (kağıt üzerinde)
 
-Dashboard'ın önerdiği range işlemlerini gerçek zamanlı fiyatla **iki ayrı
-stratejiyle** otomatik uygular; her strateji kendi 10.000$'lık hesabıyla,
-birebir aynı girişlerle yarışır. Amaç: birkaç gün veri biriktirip stop
-kullanmanın işe yarayıp yaramadığını görmek.
+Dashboard'ın önerdiği range işlemlerini gerçek zamanlı fiyatla **dört ayrı
+stratejiyle** otomatik uygular; her strateji kendi 10.000$'lık hesabıyla
+yarışır. Amaç: birkaç gün veri biriktirip stopun ve yön seçiminin işe
+yarayıp yaramadığını görmek.
 
-| | **Stopsuz** | **%1 kırılma stopu** |
+| Strateji | Yön | Stop |
 |---|---|---|
-| Giriş | bandın kenarında (alt → LONG, üst → SHORT) | aynı |
-| Hedef | karşı bant | aynı |
-| Stop | yok — hedefe dönmesini bekler | fiyat bandı aleyhte %1 aşarsa keser (SHORT: üst bant ×1.01, LONG: alt bant ×0.99) |
-| Zaman aşımı | beklenen tur × 3 | aynı |
-| Likidasyon | zarar marjini yerse (kayıp = marjin) | aynı |
+| **Stopsuz** | LONG + SHORT | yok — hedefe dönmesini bekler |
+| **%1 kırılma stopu** | LONG + SHORT | bant aleyhte %1 aşılırsa keser |
+| **Sadece LONG** | yalnız alt banttan LONG | %1 kırılma stopu |
+| **Sadece SHORT** | yalnız üst banttan SHORT | %1 kırılma stopu |
 
-Ortak kurallar: hesap 5 eşit slot, slot marjini × 10x notional, beklenen kâr
-`RANGE_MIN_PROFIT` üstünde olmalı, her iki yönde taker komisyonu
-(%0.045/taraf) + kayma (%0.02), kapanan coine 30 dk tekrar giriş yasağı.
-İki strateji arasındaki **tek fark stop kuralı** — karşılaştırma temiz.
+Stop tanımı: SHORT'ta üst bant ×1.01, LONG'ta alt bant ×0.99 aşılırsa çık.
+Ortak kurallar: giriş bandın kenarında ve beklenen kâr eşiğin üstünde
+(kripto `RANGE_MIN_PROFIT`, hisse `RANGE_MIN_PROFIT_EQ`), hedef karşı bant,
+zaman aşımı beklenen tur × 3, zarar marjini yerse likidasyon (kayıp =
+marjin), hesap 5 eşit slot × 10x notional, taker komisyonu (%0.045/taraf) +
+kayma (%0.02) iki yönde, kapanan coine 30 dk tekrar giriş yasağı.
 
 Kapanan her işlemde giriş anındaki **skor, genişlik, dokunuş, beklenen tur
 süresi ve beklenen kâr** da kaydedilir → `/api/sim` iki stratejinin tüm ham

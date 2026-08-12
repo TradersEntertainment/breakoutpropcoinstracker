@@ -76,6 +76,10 @@ VARIANTS = [
     {"key": "nostop", "name": "Stopsuz", "stop_mode": "none"},
     {"key": "stop1", "name": f"%{STOP_BREAK_PCT:g} kırılma stopu",
      "stop_mode": "band_pct", "stop_pct": STOP_BREAK_PCT},
+    {"key": "longonly", "name": f"Sadece LONG · %{STOP_BREAK_PCT:g} stop",
+     "stop_mode": "band_pct", "stop_pct": STOP_BREAK_PCT, "sides": ["LONG"]},
+    {"key": "shortonly", "name": f"Sadece SHORT · %{STOP_BREAK_PCT:g} stop",
+     "stop_mode": "band_pct", "stop_pct": STOP_BREAK_PCT, "sides": ["SHORT"]},
 ]
 
 
@@ -123,11 +127,13 @@ def fetch_hl_prices(metrics: dict) -> dict[str, float]:
 
 class Simulator:
     def __init__(self, key: str, name: str, stop_mode: str = "none",
-                 stop_pct: float = 0.0, start_balance: float = START_BALANCE):
+                 stop_pct: float = 0.0, start_balance: float = START_BALANCE,
+                 sides: list[str] | None = None):
         self.key = key
         self.name = name
         self.stop_mode = stop_mode
         self.stop_pct = stop_pct
+        self.sides = set(sides or ["LONG", "SHORT"])
         self.state_file = STATE_DIR / f"sim_state_{key}.json"
         self.data: dict = {
             "created": time.time(),
@@ -301,7 +307,7 @@ class Simulator:
                 side, target = "LONG", m["band_high"]
             elif 1 - zone <= pos_now <= 1 + overshoot:
                 side, target = "SHORT", m["band_low"]
-            if not side:
+            if not side or side not in self.sides:
                 continue
             direction = 1 if side == "LONG" else -1
             expected_pct = (target - price) / price * 100 * direction
@@ -401,7 +407,8 @@ class Simulator:
 
 def make_simulators() -> list[Simulator]:
     return [
-        Simulator(v["key"], v["name"], v.get("stop_mode", "none"), v.get("stop_pct", 0.0))
+        Simulator(v["key"], v["name"], v.get("stop_mode", "none"),
+                  v.get("stop_pct", 0.0), sides=v.get("sides"))
         for v in VARIANTS
     ]
 

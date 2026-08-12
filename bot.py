@@ -500,7 +500,8 @@ def format_coin_block(
     return "\n".join(lines)
 
 
-def startup_message(cfg: dict, mapping: dict[str, str], unmatched: list[str]) -> str:
+def startup_message(cfg: dict, mapping: dict[str, str], unmatched: list[str],
+                    eq_count: int = 0) -> str:
     renamed = [
         f"{hl}→{sym}" for hl, sym in mapping.items() if sym != f"{hl.upper()}USDT"
     ]
@@ -513,6 +514,8 @@ def startup_message(cfg: dict, mapping: dict[str, str], unmatched: list[str]) ->
         if REMINDER_MARKS else "⏰ Hatırlatma: kapalı",
         f"✅ Binance'te eşleşen: {len(mapping)}/{total}",
     ]
+    if eq_count:
+        lines.append(f"📈 Hisse (EQ) funding takibi: {eq_count} kontrat")
     if renamed:
         lines.append(f"🔁 Farklı isimle eşleşen: {', '.join(renamed)}")
     if unmatched:
@@ -692,7 +695,8 @@ def main() -> None:
     log(f"Eşleşen {len(mapping)} kripto + {len(eq_mapping)} hisse; "
         f"eşleşmeyen kripto {len(unmatched)}: {', '.join(unmatched) or '-'} · "
         f"Binance underlyingType değerleri: {seen_types}")
-    send_telegram(startup_message(cfg, mapping, unmatched), enabled=FUNDING_ALERTS)
+    send_telegram(startup_message(cfg, mapping, unmatched, len(eq_mapping)),
+                  enabled=FUNDING_ALERTS)
 
     last_alerts: dict[str, tuple[float, float]] = {}
     reminded: dict[tuple[str, float], set[int]] = {}
@@ -728,7 +732,7 @@ def main() -> None:
                 log(f"{len(blocks)} coin için bildirim gönderildi.")
 
             if next_heartbeat and cycle_start >= next_heartbeat:
-                send_telegram(heartbeat_message(mapping, premium, unmatched), enabled=FUNDING_ALERTS)
+                send_telegram(heartbeat_message(watch, premium, unmatched), enabled=FUNDING_ALERTS)
                 next_heartbeat = cycle_start + HEARTBEAT_HOURS * 3600
 
             consecutive_failures = 0

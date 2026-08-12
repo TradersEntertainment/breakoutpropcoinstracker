@@ -153,7 +153,7 @@ HTML = """<!doctype html>
 <div class="cards" id="actions"><div class="empty">İlk veri bekleniyor…</div></div>
 <div class="watch" id="watch" style="display:none"></div>
 
-<h2>🧪 Simülasyon — iki strateji yarışıyor</h2>
+<h2>🧪 Simülasyon — stratejiler yarışıyor</h2>
 <div class="cards" id="simvars"></div>
 <h2 style="font-size:12px">Açık pozisyonlar</h2>
 <div class="tablewrap"><table id="simopen"></table></div>
