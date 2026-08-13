@@ -1,0 +1,71 @@
+name: Sim snapshot
+
+# Dashboard'ın canlı verisini periyodik olarak repoya yazar; böylece
+# simülasyon skoru git üzerinden okunabilir ve tarihçesi birikir.
+
+on:
+  schedule:
+    - cron: "17 */4 * * *"   # 4 saatte bir
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sim-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch dashboard data
+        id: fetch
+        run: |
+          mkdir -p data/history
+          if ! curl -fsS -m 30 "https://rangerover.up.railway.app/api/sim" -o /tmp/sim.json; then
+            echo "site unreachable, skipping"; echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if ! curl -fsS -m 30 "https://rangerover.up.railway.app/api/state" -o /tmp/state.json; then
+            echo "state unreachable, skipping"; echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mv /tmp/sim.json data/sim_latest.json
+          mv /tmp/state.json data/state_latest.json
+          python3 - <<'PY'
+          import json, time
+          state = json.load(open("data/state_latest.json"))
+          rows = []
+          for v in (state.get("sim") or {}).get("variants", []):
+              rows.append({k: v.get(k) for k in (
+                  "key", "name", "equity", "balance", "fees_paid", "trades_total",
+                  "wins", "losses", "win_rate", "avg_win", "avg_loss",
+                  "avg_held_hours", "reason_counts")})
+          out = {
+              "t": int(time.time()),
+              "variants": rows,
+              "ranging": (state.get("ranges") or {}).get("ranging_count"),
+              "funding_top": [
+                  {k: c.get(k) for k in ("coin", "rate_pct", "interval_h", "market")}
+                  for c in (state.get("funding") or {}).get("coins", [])[:5]
+              ],
+          }
+          stamp = time.strftime("%Y%m%d-%H%M", time.gmtime())
+          json.dump(out, open(f"data/history/summary-{stamp}.json", "w"),
+                    ensure_ascii=False)
+          PY
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit
+        if: steps.fetch.outputs.ok == 'true'
+        run: |
+          git config user.name "sim-snapshot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "no changes"; exit 0
+          fi
+          git commit -m "chore: sim snapshot $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git pull --rebase origin main || true
+          git push
