@@ -173,6 +173,7 @@ yarayıp yaramadığını görmek.
 | **%5 kırılma stopu** | LONG + SHORT | geniş stop — bant aleyhte %5 |
 | **Sadece LONG · %5** | yalnız alt banttan LONG | %5 kırılma stopu |
 | **Sadece SHORT · %5** | yalnız üst banttan SHORT | %5 kırılma stopu |
+| **%2 / %3 / %4 / %6 / %7 stop** | LONG + SHORT | stop mesafesi taraması (`SIM_STOP_SWEEP`) |
 
 Stop tanımı: SHORT'ta üst bant × (1+stop), LONG'ta alt bant × (1−stop)
 aşılırsa çık. Böylece veri üç soruyu birden cevaplar: stop işe yarıyor mu
@@ -216,6 +217,7 @@ Simülatör ayarları:
 | `SIM_TIME_STOP_MULT` | `3` | Beklenen tur × N sonra çık (0 = kapalı). |
 | `SIM_STOP_BREAK_PCT` | `1.0` | Dar stop ailesinin stop mesafesi (%). |
 | `SIM_STOP_BREAK_PCT_WIDE` | `5.0` | Geniş stop ailesinin stop mesafesi (%). |
+| `SIM_STOP_SWEEP` | `2,3,4,6,7` | Ek çift-yönlü stop taraması mesafeleri (boş = kapalı). |
 | `SIM_STATE_FILE` | otomatik | Durum klasörünü değiştirmek için (normalde gerekmez). |
 
 ## Kurulum

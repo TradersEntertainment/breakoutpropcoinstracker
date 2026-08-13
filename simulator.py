@@ -95,6 +95,29 @@ VARIANTS = [
 ]
 
 
+def _sweep_values(name: str, default: str) -> list[float]:
+    values: list[float] = []
+    for part in (os.environ.get(name, "") or default).split(","):
+        part = part.strip()
+        try:
+            value = float(part)
+        except ValueError:
+            continue
+        if value > 0:
+            values.append(value)
+    return values
+
+
+# Stop mesafesi taraması: en iyi mesafeyi bulmak için ek çift-yönlü varyantlar.
+# %1 ve %5 yukarıda zaten var; anahtar çakışanlar atlanır.
+for _pct in _sweep_values("SIM_STOP_SWEEP", "2,3,4,6,7"):
+    _key = f"stop{_pct:g}".replace(".", "_")
+    if any(v["key"] == _key for v in VARIANTS):
+        continue
+    VARIANTS.append({"key": _key, "name": f"%{_pct:g} kırılma stopu",
+                     "stop_mode": "band_pct", "stop_pct": _pct})
+
+
 def log(message: str) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{stamp} UTC] [sim] {message}", flush=True)

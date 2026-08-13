@@ -445,8 +445,11 @@ function renderSim(sim, now) {
     $("simopen").innerHTML = ""; $("simtrades").innerHTML = "";
     return;
   }
-  /* Strateji karşılaştırma kartları */
-  $("simvars").innerHTML = variants.map(v => {
+  /* Strateji karşılaştırma kartları — getiriye göre sıralı */
+  const ordered = [...variants].sort((a, b) =>
+    (b.equity - b.start_balance) / b.start_balance -
+    (a.equity - a.start_balance) / a.start_balance);
+  $("simvars").innerHTML = ordered.map(v => {
     const ret = (v.equity - v.start_balance) / v.start_balance * 100;
     const days = Math.max(0.1, (now - (v.since || now)) / 86400).toFixed(1);
     const reasons = Object.entries(v.reason_counts || {})
