@@ -310,6 +310,43 @@ def chunk_message(text: str) -> list[str]:
     return chunks
 
 
+def _persist_dir() -> Path:
+    """Kalıcı küçük işaret dosyaları için klasör (varsa /data volume'u)."""
+    data_dir = Path("/data")
+    try:
+        if data_dir.is_dir() and os.access(data_dir, os.W_OK):
+            return data_dir
+    except OSError:
+        pass
+    return Path(__file__).parent
+
+
+def send_startup_once(kind: str, text: str, chat_id: str | None = None,
+                      enabled: bool = True, ttl_hours: float = 24) -> None:
+    """Açılış mesajını restart spam'ine çevirmeden gönderir.
+
+    Aynı içerikli açılış mesajı ttl_hours içinde tekrar gönderilmez —
+    Railway her deploy'da süreci yeniden başlattığı için işaret /data
+    volume'unda tutulur. İçerik değişirse (eşik, eşleşme sayısı…) hemen
+    gönderilir.
+    """
+    import hashlib
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    marker = _persist_dir() / f"startup_{kind}.json"
+    try:
+        saved = json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else {}
+    except Exception:
+        saved = {}
+    if saved.get("hash") == digest and time.time() - saved.get("ts", 0) < ttl_hours * 3600:
+        log(f"Açılış mesajı ({kind}) {ttl_hours:g} saat içinde zaten gönderilmiş — tekrarlanmadı.")
+        return
+    send_telegram(text, chat_id, enabled=enabled)
+    try:
+        marker.write_text(json.dumps({"hash": digest, "ts": time.time()}), encoding="utf-8")
+    except Exception as error:
+        log(f"Açılış işareti yazılamadı ({kind}): {error}")
+
+
 def send_telegram(text: str, chat_id: str | None = None, enabled: bool = True) -> None:
     if not enabled:
         log(f"[KAPALI] Bildirim gönderilmedi:\n{text}")
@@ -695,8 +732,8 @@ def main() -> None:
     log(f"Eşleşen {len(mapping)} kripto + {len(eq_mapping)} hisse; "
         f"eşleşmeyen kripto {len(unmatched)}: {', '.join(unmatched) or '-'} · "
         f"Binance underlyingType değerleri: {seen_types}")
-    send_telegram(startup_message(cfg, mapping, unmatched, len(eq_mapping)),
-                  enabled=FUNDING_ALERTS)
+    send_startup_once("funding", startup_message(cfg, mapping, unmatched, len(eq_mapping)),
+                      enabled=FUNDING_ALERTS)
 
     last_alerts: dict[str, tuple[float, float]] = {}
     reminded: dict[tuple[str, float], set[int]] = {}
