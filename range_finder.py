@@ -538,8 +538,8 @@ def main() -> None:
     log(f"Range finder {len(mapping)} kripto + {len(eq_mapping)} hisse izleyecek "
         f"({eq_binance_count} hisse Binance'ten, kalanı HL'den; "
         f"eşleşmeyen kripto: {len(unmatched)}, hisse: {', '.join(eq_unmatched) or '-'}).")
-    send_telegram(startup_message(len(mapping) + len(eq_mapping)),
-                  RANGE_CHAT_ID, enabled=RANGE_ALERTS)
+    bot.send_startup_once("range", startup_message(len(mapping) + len(eq_mapping)),
+                          RANGE_CHAT_ID, enabled=RANGE_ALERTS)
 
     tracker: dict = {"ranging": set(), "edge_last": {}}
     next_mapping_refresh = time.time() + bot.MAPPING_REFRESH_HOURS * 3600
